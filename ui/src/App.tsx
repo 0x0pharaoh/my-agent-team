@@ -24,11 +24,15 @@ const COLUMNS = [
   ["proposed", "Proposed"], ["backlog", "Backlog"], ["ready", "Ready"], ["in_progress", "In progress"],
   ["in_review", "In review"], ["blocked", "Blocked"], ["done", "Done"],
 ] as const;
-type Tab = "board" | "backlog" | "inbox" | "memory" | "agents" | "repo";
+type Tab = "board" | "backlog" | "inbox" | "memory" | "agents" | "docs" | "repo";
 const TABS: [Tab, string][] = [
   ["board", "Board"], ["backlog", "Backlog"], ["inbox", "Inbox"], ["memory", "Memory"], ["agents", "Agents"],
-  ["repo", "Repo"],
+  ["docs", "Docs"], ["repo", "Repo"],
 ];
+type Doc = {
+  name: string; present: boolean; fields?: Record<string, string>; text?: string; tbd?: number; inferred?: number;
+  sections?: { title: string; tbd: number; inferred: boolean }[];
+};
 type Repo = {
   git: boolean; blocked?: string[]; branch?: string | null; upstream?: string | null;
   changes?: { staged: number; modified: number; untracked: number };
@@ -346,6 +350,49 @@ function BacklogView({ board, run }: { board: Board; run: (name: string, body: o
         </section>
       )}
     </>
+  );
+}
+
+function DocsView({ project, tick }: { project: string; tick: number }) {
+  const [docs, setDocs] = useState<Doc[]>([]);
+  const [name, setName] = useState("PRD");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    op<{ docs: Doc[] }>(project, "docs_status").then((r) => setDocs(r.data.docs), (exc) => setError(exc.message));
+  }, [project, tick]);
+  const doc = docs.find((d) => d.name === name);
+  if (error) return <p role="alert" className="text-sm text-danger">{error}</p>;
+  return (
+    <div className="flex flex-col gap-4 md:flex-row">
+      <nav aria-label="Documents" className="flex shrink-0 flex-col gap-1 md:w-56">
+        {docs.map((d) => (
+          <button key={d.name} aria-current={d.name === name ? "page" : undefined} onClick={() => setName(d.name)}
+            className={`${button} text-left ${d.name === name ? "bg-primary-subtle text-primary" : "hover:bg-surface"}`}>
+            <span className="block">{d.name}</span>
+            <span className="block text-xs font-normal text-muted">
+              {d.present ? `${d.fields?.Status ?? "no status"} · v${d.fields?.Version ?? "?"} · ${d.tbd} TBD · ${d.inferred} unconfirmed`
+                : "missing"}
+            </span>
+          </button>
+        ))}
+      </nav>
+      {doc && !doc.present && <p className="text-muted">docs/{doc.name}.md does not exist yet. Run init in an agent session to draft it.</p>}
+      {doc?.present && (
+        <article className="min-w-0 flex-1">
+          <ul className="mb-3 flex flex-wrap gap-1" aria-label="Sections">
+            {doc.sections!.map((section) => (
+              <li key={section.title}>
+                <Chip tone={section.inferred || section.tbd ? "text-warning" : "text-muted"}
+                  icon={section.inferred || section.tbd ? <AlertTriangle size={12} /> : <CheckCircle2 size={12} />}>
+                  {section.title}{section.tbd > 0 && ` · ${section.tbd} TBD`}{section.inferred && " · unconfirmed"}
+                </Chip>
+              </li>
+            ))}
+          </ul>
+          <pre className="whitespace-pre-wrap rounded-lg bg-surface p-3 font-sans text-sm">{doc.text}</pre>
+        </article>
+      )}
+    </div>
   );
 }
 
@@ -701,6 +748,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       {board && projectId && tab === "backlog" && <BacklogView board={board} run={run} />}
       {board && projectId && tab === "inbox" && <InboxView project={projectId} agents={board.agents} tick={tick} run={run} />}
       {board && projectId && tab === "memory" && <MemoryView project={projectId} tick={tick} run={run} />}
+      {board && projectId && tab === "docs" && <DocsView project={projectId} tick={tick} />}
       {board && projectId && tab === "repo" && <RepoView project={projectId} tick={tick} />}
       {board && projectId && tab === "agents" && <AgentsView agents={board.agents} run={run} />}
     </div>

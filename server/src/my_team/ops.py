@@ -8,10 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from my_team import auth
 from my_team.actor import Actor
 from my_team.db.engine import Tx
-from my_team.domain import events, guard, memory, messages, notices, projects, questions, repo, sessions, tickets
+from my_team.domain import docs, events, guard, memory, messages, notices, projects, questions, repo, sessions, tickets
 from my_team.errors import Conflict
 
-DOC_NAMES = ("PRD", "ARCHITECTURE", "RULES", "DESIGN", "SECURITY")
 Status = Literal["proposed", "backlog", "ready", "in_progress", "in_review", "blocked", "done", "cancelled"]
 
 
@@ -64,7 +63,7 @@ class TeamContextIn(Input):
 
 def _docs(project: dict) -> list[str]:
     root = Path(project["root"]) if project.get("root") else None
-    return [f"docs/{name}.md" for name in DOC_NAMES if root and (root / "docs" / f"{name}.md").is_file()]
+    return [f"docs/{name}.md" for name in docs.NAMES if root and (root / "docs" / f"{name}.md").is_file()]
 
 
 @op("team_context", TeamContextIn, AGENT, "Load my-team context for this session: your seat, active ticket, "
@@ -226,6 +225,13 @@ def board(ctx: Ctx, inp: EmptyIn) -> dict:
     db=False)
 def repo_status(ctx: Ctx, inp: EmptyIn) -> dict:
     return repo.status(Path(ctx.project["root"]))
+
+
+@op("docs_status", EmptyIn, HUMAN, "The project's five docs: status fields, sections, TBD and unconfirmed "
+    "markers, and text.", read_only=True, db=False)
+def docs_status(ctx: Ctx, inp: EmptyIn) -> dict:
+    root = Path(ctx.project["root"])
+    return {"docs": [docs.summary(root, name) for name in docs.NAMES]}
 
 
 @op("repo_fetch", EmptyIn, HUMAN, "Fetch from the project's remotes (explicit human action).", db=False)
