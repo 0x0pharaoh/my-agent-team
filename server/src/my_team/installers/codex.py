@@ -1,12 +1,11 @@
 import json
 import os
 import shlex
-import shutil
 import subprocess
 from pathlib import Path
 
 from my_team import config
-from my_team.installers import cli_path, confirm, skill_source
+from my_team.installers import cli_path, confirm, copy_skill
 
 
 def install(yes: bool = False) -> int:
@@ -21,32 +20,12 @@ def install(yes: bool = False) -> int:
     ]
     if not confirm(plan, yes):
         return 1
-    _copy_skill(home)
+    copy_skill(home / ".agents" / "skills" / "my-team")
     _add_mcp(cli)
     _write_hooks(codex_home, cli)
     config.save(autostart=True)
     print("\nDone. Trust the my-team hooks once in Codex's /hooks screen, then run $my-team init in a project.")
     return 0
-
-
-def _copy_skill(home: Path) -> None:
-    source = skill_source()
-    target = home / ".agents" / "skills" / "my-team"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists() and not _same_tree(source, target):
-        shutil.rmtree(target) if target.is_dir() else target.unlink()
-    if not target.exists():
-        shutil.copytree(source, target)
-
-
-def _same_tree(left: Path, right: Path) -> bool:
-    if not right.is_dir():
-        return False
-    left_files = sorted(path.relative_to(left) for path in left.rglob("*") if path.is_file())
-    right_files = sorted(path.relative_to(right) for path in right.rglob("*") if path.is_file())
-    if left_files != right_files:
-        return False
-    return all((left / rel).read_bytes() == (right / rel).read_bytes() for rel in left_files)
 
 
 def _add_mcp(cli: str) -> None:

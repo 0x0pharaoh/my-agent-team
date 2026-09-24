@@ -1,13 +1,5 @@
 import json
-import os
 import subprocess
-import sys
-from pathlib import Path
-
-# Ensure the my-team package is importable during test collection.
-_src = Path(__file__).resolve().parents[1] / "src"
-if str(_src) not in sys.path:
-    sys.path.insert(0, str(_src))
 
 import httpx
 import pytest

@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from my_team import auth
 from my_team.actor import Actor
 from my_team.db.engine import Tx
-from my_team.domain import events, memory, messages, notices, projects, questions, sessions, tickets
+from my_team.domain import events, guard, memory, messages, notices, projects, questions, sessions, tickets
 from my_team.errors import Conflict
 
 DOC_NAMES = ("PRD", "ARCHITECTURE", "RULES", "DESIGN", "SECURITY")
@@ -131,10 +131,19 @@ class TicketKeyIn(Input):
     key: str
 
 
-@op("ticket_claim", TicketKeyIn, AGENT, "Claim a ready ticket before editing code for it. A session holds at most "
-    "one in-progress ticket. Returns the claim epoch to pass to ticket_update.", tool=True)
-def ticket_claim(ctx: Ctx, inp: TicketKeyIn) -> dict:
-    return {"ticket": tickets.claim(ctx.tx, ctx.actor, inp.key, ctx.now, ctx.stall_cutoff)}
+PathsField = Field(None, max_length=50, description="Files or directories this work touches (globs allowed), "
+                  "so other agents are warned before editing them.")
+
+
+class TicketClaimIn(Input):
+    key: str
+    paths: list[str] | None = PathsField
+
+
+@op("ticket_claim", TicketClaimIn, AGENT, "Claim a ready ticket before editing code for it, listing the paths you "
+    "will touch. A session holds at most one in-progress ticket. Returns the claim epoch for ticket_update.", tool=True)
+def ticket_claim(ctx: Ctx, inp: TicketClaimIn) -> dict:
+    return {"ticket": tickets.claim(ctx.tx, ctx.actor, inp.key, ctx.now, ctx.stall_cutoff, paths=inp.paths)}
 
 
 class TicketUpdateIn(Input):
@@ -143,13 +152,14 @@ class TicketUpdateIn(Input):
     epoch: int = Field(..., description="Claim epoch from ticket_claim or ticket_find.")
     note: str | None = Field(None, description="Progress note; required for note, block and release.")
     summary: str | None = Field(None, description="Implementation summary; required for review.")
+    paths: list[str] | None = PathsField
 
 
 @op("ticket_update", TicketUpdateIn, AGENT, "Record progress on your claimed ticket, move it to review, block it, "
     "or release it. Only the human closes tickets.", tool=True)
 def ticket_update(ctx: Ctx, inp: TicketUpdateIn) -> dict:
     return {"ticket": tickets.act(ctx.tx, ctx.actor, inp.key, inp.action, inp.epoch, ctx.now, ctx.stall_cutoff,
-                                  note=inp.note, summary=inp.summary)}
+                                  note=inp.note, summary=inp.summary, paths=inp.paths)}
 
 
 class TicketTransitionIn(Input):
@@ -377,6 +387,16 @@ def questions_list(ctx: Ctx, inp: QuestionsListIn) -> dict:
 @op("messages_recent", EmptyIn, HUMAN, "Recent messages with per-recipient read state.", read_only=True)
 def messages_recent(ctx: Ctx, inp: EmptyIn) -> dict:
     return {"messages": messages.recent(ctx.tx), "unread": messages.unread_count(ctx.tx, "human", "human")}
+
+
+class EditCheckIn(Input):
+    path: str = Field(..., max_length=1000)
+
+
+@op("edit_check", EditCheckIn, AGENT, "Pre-edit guard: ask the human when editing without a claimed ticket or in "
+    "another session's claimed paths.", read_only=True)
+def edit_check(ctx: Ctx, inp: EditCheckIn) -> dict:
+    return guard.check(ctx.tx, ctx.session, Path(ctx.project["root"]), inp.path)
 
 
 class EventsSinceIn(Input):

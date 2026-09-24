@@ -25,7 +25,7 @@ def test_codex_install_is_idempotent_and_preserves_hooks(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.setenv("MY_TEAM_HOME", str(my_team_home))
-    monkeypatch.setattr(codex, "skill_source", lambda: skill)
+    monkeypatch.setattr("my_team.installers.skill_source", lambda: skill)
     monkeypatch.setattr(codex, "cli_path", lambda: str(tmp_path / "bin" / "my-team.exe"))
     monkeypatch.setattr(codex, "_run", lambda args, **kwargs: fake_run(args, calls))
 

@@ -90,8 +90,15 @@ async def test_claude_code_session_end_to_end(live, repo):
                                                                              "cwd": str(repo)})))
                 assert f"Assigned to you, not started: {key}" in delta["hookSpecificOutput"]["additionalContext"]
 
-                claimed = json.loads(text(await mcp.call_tool("ticket_claim", {"key": key})))
+                unclaimed = json.loads(text(await mcp.call_tool("hook_pre_edit", {
+                    "session_id": "cc-session-1", "cwd": str(repo), "file_path": str(repo / "src" / "x.py")})))
+                assert unclaimed["hookSpecificOutput"]["permissionDecision"] == "ask"
+
+                claimed = json.loads(text(await mcp.call_tool("ticket_claim", {"key": key, "paths": ["src/"]})))
                 assert claimed["ticket"]["status"] == "in_progress"
+                allowed = await mcp.call_tool("hook_pre_edit", {"session_id": "cc-session-1", "cwd": str(repo),
+                                                                "file_path": str(repo / "src" / "x.py")})
+                assert text(allowed) == ""
 
                 cleared = json.loads(text(await mcp.call_tool("hook_prompt", {"session_id": "cc-session-2",
                                                                                "cwd": str(repo)})))

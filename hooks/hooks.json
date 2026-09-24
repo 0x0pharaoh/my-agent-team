@@ -44,6 +44,23 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "plugin:my-team:my-team",
+            "tool": "hook_pre_edit",
+            "input": {
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "file_path": "${tool_input.file_path}"
+            }
+          }
+        ]
+      }
     ]
   }
 }

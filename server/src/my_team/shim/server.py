@@ -36,6 +36,8 @@ LOCAL_TOOLS = {
     "hook_prompt": (INTERNAL, {"session_id": {"type": "string"}, "cwd": {"type": "string"},
                                "prompt": {"type": "string"}}),
     "hook_session_start": (INTERNAL, {"session_id": {"type": "string"}, "source": {"type": "string"}}),
+    "hook_pre_edit": (INTERNAL, {"session_id": {"type": "string"}, "cwd": {"type": "string"},
+                                 "file_path": {"type": "string"}}),
 }
 
 PROMPTS = {
@@ -249,6 +251,22 @@ class Shim:
     async def hook_prompt(self, args: dict, meta, explicit) -> str:
         return await self._hook("prompt", args.get("session_id") or self.native_id(meta), args.get("cwd"),
                                 None)
+
+    async def hook_pre_edit(self, args: dict, meta, explicit) -> str:
+        native = args.get("session_id") or self.native_id(meta)
+        if not args.get("file_path"):
+            return ""
+        resolved = activation.resolve(activation.load(), self.agent_type, native, args.get("cwd") or self.cwd)
+        if not resolved["active"]:
+            return ""
+        try:
+            verdict, _ = await self.op(native, "edit_check", {"path": args["file_path"]})
+        except (NotInitialized, DaemonUnavailable, DaemonError):
+            return ""
+        if verdict["decision"] != "ask":
+            return ""
+        return json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask",
+                                                  "permissionDecisionReason": verdict["reason"]}})
 
     async def hook_session_start(self, args: dict, meta, explicit) -> str:
         return await self._hook("session-start", args.get("session_id") or self.native_id(meta), None, True)

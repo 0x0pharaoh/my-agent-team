@@ -23,6 +23,20 @@ def skill_source() -> Path:
     return root / "skills" / "my-team"
 
 
+def copy_skill(target: Path) -> bool:
+    """Copies the skill to target unless an identical copy is already there. Returns True when it wrote."""
+    source = skill_source()
+    files = sorted(p.relative_to(source) for p in source.rglob("*") if p.is_file())
+    if target.is_dir() and files == sorted(p.relative_to(target) for p in target.rglob("*") if p.is_file()) and \
+            all((source / f).read_bytes() == (target / f).read_bytes() for f in files):
+        return False
+    if target.exists():
+        shutil.rmtree(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, target)
+    return True
+
+
 def confirm(plan: list[str], yes: bool) -> bool:
     print("This will:\n" + "".join(f"  {n}. {step}\n" for n, step in enumerate(plan, 1)))
     return yes or input("Proceed? [y/N] ").strip().lower() == "y"

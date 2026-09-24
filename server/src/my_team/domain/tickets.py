@@ -80,7 +80,7 @@ def serialize(tx: Tx, row, stall_cutoff: int) -> dict:
         "acceptance_criteria": json.loads(row["acceptance_criteria"]),
         "changes_requested": bool(row["changes_requested"]),
         "status_reason": row["status_reason"], "implementation_summary": row["implementation_summary"],
-        "origin_key": row["origin_key"], "version": row["version"],
+        "origin_key": row["origin_key"], "version": row["version"], "paths": json.loads(row["paths"]),
         "created_ms": row["created_ms"], "updated_ms": row["updated_ms"],
         "pending_pickup": row["status"] == "ready" and row["assignee_agent_id"] is not None,
         "stalled": stalled,
@@ -158,10 +158,18 @@ def _not_claimable(tx: Tx, row, actor: Actor, stall_cutoff: int) -> Conflict:
                     ticket=row["key"], status=row["status"])
 
 
-def claim(tx: Tx, actor: Actor, key: str, now: int, stall_cutoff: int) -> dict:
+def _paths(paths: list[str] | None) -> str | None:
+    if paths is None:
+        return None
+    return json.dumps(list(dict.fromkeys(p.replace("\\", "/").strip() for p in paths if p.strip()))[:50])
+
+
+def claim(tx: Tx, actor: Actor, key: str, now: int, stall_cutoff: int, paths: list[str] | None = None) -> dict:
     row = _row(tx, key)
     if row["status"] == "in_progress" and row["active_session_id"] == actor.session_id:
-        return serialize(tx, row, stall_cutoff)
+        if paths is not None:
+            tx.execute("UPDATE tickets SET paths = ? WHERE id = ?", (_paths(paths), row["id"]))
+        return get(tx, key, stall_cutoff)
     params = {"id": row["id"], "session": actor.session_id, "agent": actor.agent_id, "now": now,
               "stall_cutoff": stall_cutoff}
     try:
@@ -174,6 +182,8 @@ def claim(tx: Tx, actor: Actor, key: str, now: int, stall_cutoff: int) -> dict:
                        ticket=held) from None
     if not changed:
         raise _not_claimable(tx, row, actor, stall_cutoff)
+    if paths is not None:
+        tx.execute("UPDATE tickets SET paths = ? WHERE id = ?", (_paths(paths), row["id"]))
     claimed = _row(tx, key)
     kind = "ticket.taken_over" if row["status"] == "in_progress" else "ticket.claimed"
     events.emit(tx, kind, "ticket", row["id"], actor,
@@ -182,7 +192,7 @@ def claim(tx: Tx, actor: Actor, key: str, now: int, stall_cutoff: int) -> dict:
 
 
 def act(tx: Tx, actor: Actor, key: str, action: str, epoch: int, now: int, stall_cutoff: int,
-        note: str | None = None, summary: str | None = None) -> dict:
+        note: str | None = None, summary: str | None = None, paths: list[str] | None = None) -> dict:
     if action not in AGENT_ACTIONS:
         raise Invalid("unknown_action", f"Action must be one of {', '.join(AGENT_ACTIONS)}.")
     row = _row(tx, key)
@@ -195,6 +205,10 @@ def act(tx: Tx, actor: Actor, key: str, action: str, epoch: int, now: int, stall
         raise Conflict("claim_lost", f"Claim epoch {epoch} is stale for {key}; call ticket_find to refresh.",
                        ticket=key, epoch=row["claim_epoch"])
     note, summary = redact((note or "").strip()), redact((summary or "").strip())
+    if paths is not None:
+        tx.execute("UPDATE tickets SET paths = ? WHERE id = ?", (_paths(paths), row["id"]))
+    if action == "note" and paths is not None and not note:
+        return get(tx, key, stall_cutoff)
     if action == "note":
         if not note:
             raise Invalid("note_required", "A note needs text.")
