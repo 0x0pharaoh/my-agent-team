@@ -189,6 +189,9 @@ def create_app(state: DaemonState, static_dir: Path | None = None) -> FastAPI:
             raise Forbidden("human_only" if op.human_only else "agent_only", f"{name} is not available to {actor.kind}s.")
         inp = parse(op.input, body)
         project = await state.project(project_id)
+        if not op.db:
+            ctx = Ctx(None, actor, project, now_ms(), 0, state.started_ms)
+            return envelope(await asyncio.to_thread(op.run, ctx, inp))
         db = await asyncio.to_thread(state.project_db, project_id)
 
         def unit(tx):

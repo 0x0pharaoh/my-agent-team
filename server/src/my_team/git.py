@@ -5,7 +5,7 @@ from pathlib import Path
 from my_team.paths import ensure_private_dir, private_data_dir
 
 _ENV_KEEP = ("PATH", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
-             "TEMP", "TMP", "LANG", "LC_ALL", "COMSPEC", "PATHEXT")
+             "TEMP", "TMP", "LANG", "LC_ALL", "COMSPEC", "PATHEXT", "SSH_AUTH_SOCK")
 
 
 class GitError(Exception):

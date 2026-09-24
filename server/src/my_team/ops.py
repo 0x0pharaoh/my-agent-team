@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from my_team import auth
 from my_team.actor import Actor
 from my_team.db.engine import Tx
-from my_team.domain import events, guard, memory, messages, notices, projects, questions, sessions, tickets
+from my_team.domain import events, guard, memory, messages, notices, projects, questions, repo, sessions, tickets
 from my_team.errors import Conflict
 
 DOC_NAMES = ("PRD", "ARCHITECTURE", "RULES", "DESIGN", "SECURITY")
@@ -39,6 +39,7 @@ class Op:
     description: str
     tool: bool = False
     read_only: bool = False
+    db: bool = True
 
     @property
     def human_only(self) -> bool:
@@ -50,9 +51,9 @@ HUMAN, AGENT, BOTH = frozenset({"human"}), frozenset({"agent"}), frozenset({"hum
 
 
 def op(name: str, input_model: type[Input], actors: frozenset[str], description: str, tool: bool = False,
-       read_only: bool = False):
+       read_only: bool = False, db: bool = True):
     def register(fn):
-        OPS[name] = Op(name, input_model, fn, actors, description, tool, read_only)
+        OPS[name] = Op(name, input_model, fn, actors, description, tool, read_only, db)
         return fn
     return register
 
@@ -195,6 +196,7 @@ class TicketEditIn(Input):
     priority: Literal["p0", "p1", "p2", "p3"] | None = None
     type: Literal["feature", "bug", "chore", "docs", "spike"] | None = None
     acceptance_criteria: list[dict | str] | None = None
+    sprint_id: str | None = Field(None, description='Sprint to move the ticket into; "" moves it to the backlog.')
 
 
 @op("ticket_edit", TicketEditIn, HUMAN, "Edit ticket fields.")
@@ -217,7 +219,44 @@ class EmptyIn(Input):
 @op("board", EmptyIn, HUMAN, "Snapshot of tickets and agent seats for the dashboard.", read_only=True)
 def board(ctx: Ctx, inp: EmptyIn) -> dict:
     return {"tickets": tickets.find(ctx.tx, ctx.stall_cutoff, limit=1000),
-            "agents": sessions.seats(ctx.tx, ctx.now, ctx.daemon_started_ms)}
+            "agents": sessions.seats(ctx.tx, ctx.now, ctx.daemon_started_ms), "sprints": tickets.sprints(ctx.tx)}
+
+
+@op("repo_status", EmptyIn, HUMAN, "Local and remote state of the project's git repository.", read_only=True,
+    db=False)
+def repo_status(ctx: Ctx, inp: EmptyIn) -> dict:
+    return repo.status(Path(ctx.project["root"]))
+
+
+@op("repo_fetch", EmptyIn, HUMAN, "Fetch from the project's remotes (explicit human action).", db=False)
+def repo_fetch(ctx: Ctx, inp: EmptyIn) -> dict:
+    return repo.fetch(Path(ctx.project["root"]))
+
+
+class SprintCreateIn(Input):
+    name: str = Field(..., max_length=100)
+    goal: str = Field("", max_length=1000)
+    end_ms: int | None = None
+
+
+@op("sprint_create", SprintCreateIn, HUMAN, "Plan a sprint.")
+def sprint_create(ctx: Ctx, inp: SprintCreateIn) -> dict:
+    return {"sprint_id": tickets.sprint_create(ctx.tx, ctx.actor, ctx.now, inp.name, inp.goal, inp.end_ms)}
+
+
+class SprintTransitionIn(Input):
+    sprint_id: str
+    action: Literal["start", "complete", "cancel"]
+    goal: str | None = Field(None, max_length=1000)
+    end_ms: int | None = None
+    move_to: str | None = Field(None, description="Planned sprint for unfinished tickets on complete; else backlog.")
+
+
+@op("sprint_transition", SprintTransitionIn, HUMAN, "Start, complete, or cancel a sprint.")
+def sprint_transition(ctx: Ctx, inp: SprintTransitionIn) -> dict:
+    tickets.sprint_transition(ctx.tx, ctx.actor, inp.sprint_id, inp.action, ctx.now, goal=inp.goal,
+                              end_ms=inp.end_ms, move_to=inp.move_to)
+    return {"sprints": tickets.sprints(ctx.tx)}
 
 
 class AgentUpdateIn(Input):

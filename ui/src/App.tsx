@@ -9,19 +9,33 @@ type Ticket = {
   holder: { session_id: string; name: string; last_heartbeat_ms: number | null } | null;
   acceptance_criteria: Criterion[]; pending_pickup: boolean; stalled: boolean; waiting_on: string[];
   changes_requested: boolean; status_reason: string | null; implementation_summary: string | null;
-  human_actions: string[];
+  human_actions: string[]; sprint_id: string | null;
+};
+type Sprint = {
+  id: string; name: string; goal: string; status: string; start_ms: number | null; end_ms: number | null;
+  review_summary: string | null; total: number; done: number;
 };
 type Session = { id: string; status: string; ticket: string | null; last_heartbeat_ms: number | null; last_activity_ms: number };
 type Agent = { id: string; display_name: string; agent_type: string; role: string | null; sessions: Session[] };
 type Project = { id: string; name: string; key: string; roots: string[] };
-type Board = { tickets: Ticket[]; agents: Agent[] };
+type Board = { tickets: Ticket[]; agents: Agent[]; sprints: Sprint[] };
 
 const COLUMNS = [
   ["proposed", "Proposed"], ["backlog", "Backlog"], ["ready", "Ready"], ["in_progress", "In progress"],
   ["in_review", "In review"], ["blocked", "Blocked"], ["done", "Done"],
 ] as const;
-type Tab = "board" | "inbox" | "memory" | "agents";
-const TABS: [Tab, string][] = [["board", "Board"], ["inbox", "Inbox"], ["memory", "Memory"], ["agents", "Agents"]];
+type Tab = "board" | "backlog" | "inbox" | "memory" | "agents" | "repo";
+const TABS: [Tab, string][] = [
+  ["board", "Board"], ["backlog", "Backlog"], ["inbox", "Inbox"], ["memory", "Memory"], ["agents", "Agents"],
+  ["repo", "Repo"],
+];
+type Repo = {
+  git: boolean; blocked?: string[]; branch?: string | null; upstream?: string | null;
+  changes?: { staged: number; modified: number; untracked: number };
+  commits?: { sha: string; subject: string; author: string; time_ms: number }[];
+  ahead?: number | null; behind?: number | null; fetched_ms?: number | null;
+  remotes?: { name: string; url: string }[]; fetch_disabled?: string | null;
+};
 const ACTION_LABELS: Record<string, string> = {
   accept: "Accept", ready: "Mark ready", done: "Close as done", request_changes: "Request changes",
   pause: "Pause", unblock: "Unblock", cancel: "Cancel",
@@ -42,6 +56,10 @@ function ago(ms: number | null, now: number) {
   if (seconds < 60) return `${seconds}s ago`;
   if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
   return `${Math.round(seconds / 3600)}h ago`;
+}
+
+function day(ms: number | null) {
+  return ms ? new Date(ms).toLocaleDateString() : "no end date";
 }
 
 function Chip({ tone, icon, children }: { tone: string; icon: ReactNode; children: ReactNode }) {
@@ -188,6 +206,8 @@ function BoardView({ project, board, run }: { project: string; board: Board; run
   const [criteria, setCriteria] = useState("");
   const [openKey, setOpenKey] = useState<string | null>(null);
   const open = board.tickets.find((ticket) => ticket.key === openKey);
+  const active = board.sprints.find((sprint) => sprint.status === "active");
+  const shown = active ? board.tickets.filter((ticket) => ticket.sprint_id === active.id) : board.tickets;
   function create(event: FormEvent) {
     event.preventDefault();
     const lines = criteria.split("\n").map((line) => line.trim()).filter(Boolean);
@@ -203,10 +223,17 @@ function BoardView({ project, board, run }: { project: string; board: Board; run
         <textarea aria-label="Acceptance criteria, one per line" placeholder="Acceptance criteria, one per line (makes it ready)"
           className={`${field} h-9 max-w-sm`} value={criteria} onChange={(e) => setCriteria(e.target.value)} />
         <button type="submit" className={primary}>Create ticket</button>
+        {active && <span className="self-center text-xs text-muted">New tickets go to the backlog.</span>}
       </form>
+      {active && (
+        <p className="mb-3 text-sm">
+          <strong>{active.name}</strong> — {active.goal}{" "}
+          <span className="text-muted">· {active.done}/{active.total} done · ends {day(active.end_ms)}</span>
+        </p>
+      )}
       <div className="flex gap-3 overflow-x-auto pb-4">
         {COLUMNS.map(([status, label]) => {
-          const tickets = board.tickets.filter((ticket) => ticket.status === status);
+          const tickets = shown.filter((ticket) => ticket.status === status);
           return (
             <section key={status} className="w-64 shrink-0 rounded-lg bg-surface p-2" aria-label={label}>
               <h2 className="mb-2 text-sm font-semibold">{label} <span className="text-muted">{tickets.length}</span></h2>
@@ -222,6 +249,175 @@ function BoardView({ project, board, run }: { project: string; board: Board; run
       </div>
       {open && <TicketDialog project={project} ticket={open} onClose={() => setOpenKey(null)} run={run} />}
     </>
+  );
+}
+
+function BacklogView({ board, run }: { board: Board; run: (name: string, body: object) => void }) {
+  const [name, setName] = useState("");
+  const [goal, setGoal] = useState("");
+  const [end, setEnd] = useState("");
+  const [moveTo, setMoveTo] = useState("");
+  const open = board.sprints.filter((sprint) => sprint.status === "planned" || sprint.status === "active");
+  const planned = open.filter((sprint) => sprint.status === "planned");
+  const past = board.sprints.filter((sprint) => !open.includes(sprint));
+  const sections: [Sprint | null, Ticket[]][] = [
+    ...open.map((sprint): [Sprint, Ticket[]] => [sprint, board.tickets.filter((t) => t.sprint_id === sprint.id)]),
+    [null, board.tickets.filter((t) => !t.sprint_id && t.status !== "done" && t.status !== "cancelled")],
+  ];
+  function create(event: FormEvent) {
+    event.preventDefault();
+    run("sprint_create", { name, goal, end_ms: new Date(`${end}T23:59:59`).getTime() });
+    setName("");
+    setGoal("");
+    setEnd("");
+  }
+  return (
+    <>
+      <form onSubmit={create} className="mb-4 flex flex-wrap items-center gap-2">
+        <input required aria-label="Sprint name" placeholder="Sprint name" className={`${field} max-w-48`}
+          value={name} onChange={(e) => setName(e.target.value)} />
+        <input required aria-label="Sprint goal" placeholder="Sprint goal" className={`${field} max-w-sm`}
+          value={goal} onChange={(e) => setGoal(e.target.value)} />
+        <label className="flex items-center gap-1 text-sm">Ends
+          <input required type="date" className={`${field} w-auto`} value={end} onChange={(e) => setEnd(e.target.value)} />
+        </label>
+        <button type="submit" className={primary}>Plan sprint</button>
+      </form>
+      {sections.map(([sprint, tickets]) => (
+        <section key={sprint?.id ?? "backlog"} aria-label={sprint?.name ?? "Backlog"} className="mb-4 rounded-lg bg-surface p-3">
+          <header className="mb-2 flex flex-wrap items-center gap-2">
+            <h2 className="font-semibold">{sprint?.name ?? "Backlog"}</h2>
+            {sprint && (
+              <span className="text-sm text-muted">
+                {sprint.status} · {sprint.done}/{sprint.total} done · ends {day(sprint.end_ms)}{sprint.goal && ` — ${sprint.goal}`}
+              </span>
+            )}
+            {sprint && (
+              <span className="ml-auto flex gap-1">
+                {sprint.status === "planned" && (
+                  <button className={secondary}
+                    onClick={() => run("sprint_transition", { sprint_id: sprint.id, action: "start" })}>Start</button>
+                )}
+                {sprint.status === "active" && (
+                  <>
+                    <select aria-label="Move unfinished tickets to" className={`${field} w-auto text-xs`} value={moveTo}
+                      onChange={(e) => setMoveTo(e.target.value)}>
+                      <option value="">Unfinished → backlog</option>
+                      {planned.map((p) => <option key={p.id} value={p.id}>Unfinished → {p.name}</option>)}
+                    </select>
+                    <button className={secondary} onClick={() => run("sprint_transition", {
+                      sprint_id: sprint.id, action: "complete", move_to: moveTo || null,
+                    })}>Complete</button>
+                  </>
+                )}
+                <button className={secondary}
+                  onClick={() => window.confirm(`Cancel ${sprint.name}? Unfinished tickets return to the backlog.`)
+                    && run("sprint_transition", { sprint_id: sprint.id, action: "cancel" })}>Cancel sprint</button>
+              </span>
+            )}
+          </header>
+          <ul className="divide-y divide-border">
+            {tickets.map((ticket) => (
+              <li key={ticket.id} className="flex flex-wrap items-center gap-2 py-1.5 text-sm">
+                <span className="w-16 font-mono text-xs text-muted">{ticket.key}</span>
+                <span className="min-w-40 flex-1">{ticket.title}</span>
+                <span className="text-xs text-muted">{ticket.status.replace("_", " ")}</span>
+                <select aria-label={`Priority of ${ticket.key}`} className={`${field} w-auto text-xs`} value={ticket.priority}
+                  onChange={(e) => run("ticket_edit", { key: ticket.key, version: ticket.version, priority: e.target.value })}>
+                  {["p0", "p1", "p2", "p3"].map((p) => <option key={p} value={p}>{p}</option>)}
+                </select>
+                <select aria-label={`Sprint for ${ticket.key}`} className={`${field} w-auto text-xs`} value={ticket.sprint_id ?? ""}
+                  onChange={(e) => run("ticket_edit", { key: ticket.key, version: ticket.version, sprint_id: e.target.value })}>
+                  <option value="">Backlog</option>
+                  {open.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </li>
+            ))}
+          </ul>
+          {tickets.length === 0 && <p className="text-xs text-muted">No tickets.</p>}
+        </section>
+      ))}
+      {past.length > 0 && (
+        <section aria-label="Past sprints">
+          <h2 className="mb-1 text-sm font-semibold">Past sprints</h2>
+          <ul className="space-y-1 text-sm text-muted">
+            {past.map((s) => <li key={s.id}>{s.name} · {s.status}{s.review_summary && ` · ${s.review_summary}`}</li>)}
+          </ul>
+        </section>
+      )}
+    </>
+  );
+}
+
+function RepoView({ project, tick }: { project: string; tick: number }) {
+  const [repo, setRepo] = useState<Repo | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const now = useNow();
+  useEffect(() => {
+    op<Repo>(project, "repo_status").then((r) => setRepo(r.data), (exc) => setError(exc.message));
+  }, [project, tick]);
+  async function fetchNow() {
+    setBusy(true);
+    setError("");
+    try {
+      setRepo((await op<Repo>(project, "repo_fetch")).data);
+    } catch (exc) {
+      setError(exc instanceof ApiError ? exc.message : "Fetch failed.");
+    }
+    setBusy(false);
+  }
+  if (error && !repo) return <p role="alert" className="text-sm text-danger">{error}</p>;
+  if (!repo) return <p className="text-muted">Loading…</p>;
+  if (!repo.git) return <p className="text-muted">The project root is not a git repository.</p>;
+  if (repo.blocked?.length) {
+    return (
+      <p role="alert" className="text-sm text-danger">
+        Git features are off: this repository's own config sets command-running keys ({repo.blocked.join(", ")}).
+      </p>
+    );
+  }
+  const changes = repo.changes!;
+  const verified = repo.fetched_ms ? `as of last fetch ${ago(repo.fetched_ms, now)}` : "not verified (never fetched)";
+  return (
+    <div className="grid gap-4 md:grid-cols-2">
+      <section aria-label="Local" className="rounded-lg bg-surface p-3">
+        <h2 className="mb-2 font-semibold">Local</h2>
+        <p className="text-sm">
+          <span className="font-mono">{repo.branch ?? "detached HEAD"}</span>
+          <span className="text-muted"> · {changes.staged} staged · {changes.modified} modified · {changes.untracked} untracked</span>
+        </p>
+        <ol className="mt-2 space-y-1 text-sm">
+          {repo.commits!.map((c) => (
+            <li key={c.sha} className="flex gap-2">
+              <span className="font-mono text-xs text-muted">{c.sha}</span>
+              <span className="flex-1">{c.subject}</span>
+              <span className="text-xs text-muted">{c.author} · {ago(c.time_ms, now)}</span>
+            </li>
+          ))}
+        </ol>
+        {repo.commits!.length === 0 && <p className="text-xs text-muted">No commits yet.</p>}
+      </section>
+      <section aria-label="Remote" className="rounded-lg bg-surface p-3">
+        <header className="mb-2 flex items-center gap-2">
+          <h2 className="font-semibold">Remote</h2>
+          <button className={`${secondary} ml-auto`} onClick={fetchNow}
+            disabled={busy || !!repo.fetch_disabled || repo.remotes!.length === 0}>{busy ? "Fetching…" : "Fetch"}</button>
+        </header>
+        {repo.fetch_disabled && <p className="mb-2 text-sm text-warning">{repo.fetch_disabled}</p>}
+        {error && <p role="alert" className="mb-2 text-sm text-danger">{error}</p>}
+        {repo.upstream ? (
+          <p className="text-sm">
+            <span className="font-mono">{repo.upstream}</span> · {repo.ahead} ahead · {repo.behind} behind
+            <span className="text-muted"> · {verified}</span>
+          </p>
+        ) : <p className="text-sm text-muted">No upstream branch.</p>}
+        <ul className="mt-2 space-y-1 text-sm">
+          {repo.remotes!.map((r) => <li key={r.name}><span className="font-mono">{r.name}</span> <span className="text-muted">{r.url}</span></li>)}
+        </ul>
+        {repo.remotes!.length === 0 && <p className="text-xs text-muted">No remotes.</p>}
+      </section>
+    </div>
   );
 }
 
@@ -502,8 +698,10 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         <p className="text-muted">No projects yet. In an agent session, run <code className="font-mono">/my-team:init</code>.</p>
       )}
       {board && projectId && tab === "board" && <BoardView project={projectId} board={board} run={run} />}
+      {board && projectId && tab === "backlog" && <BacklogView board={board} run={run} />}
       {board && projectId && tab === "inbox" && <InboxView project={projectId} agents={board.agents} tick={tick} run={run} />}
       {board && projectId && tab === "memory" && <MemoryView project={projectId} tick={tick} run={run} />}
+      {board && projectId && tab === "repo" && <RepoView project={projectId} tick={tick} />}
       {board && projectId && tab === "agents" && <AgentsView agents={board.agents} run={run} />}
     </div>
   );

@@ -81,6 +81,7 @@ def serialize(tx: Tx, row, stall_cutoff: int) -> dict:
         "changes_requested": bool(row["changes_requested"]),
         "status_reason": row["status_reason"], "implementation_summary": row["implementation_summary"],
         "origin_key": row["origin_key"], "version": row["version"], "paths": json.loads(row["paths"]),
+        "sprint_id": row["sprint_id"],
         "created_ms": row["created_ms"], "updated_ms": row["updated_ms"],
         "pending_pickup": row["status"] == "ready" and row["assignee_agent_id"] is not None,
         "stalled": stalled,
@@ -306,6 +307,11 @@ def edit(tx: Tx, actor: Actor, key: str, changes: dict, now: int, stall_cutoff: 
     updates = {k: redact(v) if isinstance(v, str) else v for k, v in changes.items() if k in EDITABLE and v is not None}
     if "title" in updates and not str(updates["title"]).strip():
         raise Invalid("title_required", "A ticket needs a title.")
+    sprint = changes.get("sprint_id")
+    if sprint is not None:
+        if sprint and not tx.scalar("SELECT 1 FROM sprints WHERE id = ? AND status IN ('planned', 'active')", (sprint,)):
+            raise Invalid("bad_sprint", "Tickets can join only a planned or active sprint.")
+        updates["sprint_id"] = sprint or None
     if "acceptance_criteria" in updates:
         criteria = _criteria(updates["acceptance_criteria"])
         if row["status"] == "ready" and not criteria:
@@ -317,6 +323,58 @@ def edit(tx: Tx, actor: Actor, key: str, changes: dict, now: int, stall_cutoff: 
                    (*updates.values(), now, row["id"]))
         events.emit(tx, "ticket.edited", "ticket", row["id"], actor, {"key": key, "fields": sorted(updates)}, now)
     return get(tx, key, stall_cutoff)
+
+
+SPRINT_ACTIONS = {"start": (("planned",), "active"), "complete": (("active",), "completed"),
+                  "cancel": (("planned", "active"), "cancelled")}
+
+
+def sprints(tx: Tx) -> list[dict]:
+    rows = tx.all("SELECT s.*, COUNT(t.id) AS total, COALESCE(SUM(t.status = 'done'), 0) AS done FROM sprints s"
+                  " LEFT JOIN tickets t ON t.sprint_id = s.id GROUP BY s.id ORDER BY s.created_ms")
+    keys = ("id", "name", "goal", "status", "start_ms", "end_ms", "review_summary", "total", "done")
+    return [{k: row[k] for k in keys} for row in rows]
+
+
+def sprint_create(tx: Tx, actor: Actor, now: int, name: str, goal: str = "", end_ms: int | None = None) -> str:
+    name = redact(name.strip())
+    if not name:
+        raise Invalid("name_required", "A sprint needs a name.")
+    sprint_id = new_id()
+    tx.execute("INSERT INTO sprints (id, name, goal, end_ms, created_ms, updated_ms) VALUES (?, ?, ?, ?, ?, ?)",
+               (sprint_id, name, redact(goal.strip()), end_ms, now, now))
+    events.emit(tx, "sprint.created", "sprint", sprint_id, actor, {"name": name}, now)
+    return sprint_id
+
+
+def sprint_transition(tx: Tx, actor: Actor, sprint_id: str, action: str, now: int, *, goal: str | None = None,
+                      end_ms: int | None = None, move_to: str | None = None) -> None:
+    """Complete and cancel move unfinished tickets to move_to (a planned sprint) or the backlog; claims are kept."""
+    sources, target = SPRINT_ACTIONS[action]
+    row = tx.one("SELECT * FROM sprints WHERE id = ?", (sprint_id,))
+    if row is None:
+        raise NotFound("unknown_sprint", "No such sprint.")
+    if row["status"] not in sources:
+        raise Conflict("invalid_transition", f"Sprint {row['name']} is {row['status']}; '{action}' does not apply.")
+    goal, end_ms, summary = redact(goal.strip()) if goal else row["goal"], end_ms or row["end_ms"], None
+    if action == "start" and (not goal or not end_ms or end_ms < now):
+        raise Invalid("goal_and_end_required", "Starting a sprint needs a goal and a future end date.")
+    if action != "start":
+        move_to = move_to if action == "complete" else None
+        destination = tx.scalar("SELECT name FROM sprints WHERE id = ? AND status = 'planned'", (move_to,))
+        if move_to and not destination:
+            raise Invalid("bad_destination", "Unfinished tickets can move only to a planned sprint or the backlog.")
+        done = tx.scalar("SELECT COUNT(*) FROM tickets WHERE sprint_id = ? AND status = 'done'", (sprint_id,))
+        carried = tx.execute("UPDATE tickets SET sprint_id = ?, version = version + 1, updated_ms = ? WHERE sprint_id = ?"
+                             " AND status NOT IN ('done', 'cancelled')", (move_to, now, sprint_id)).rowcount
+        summary = f"{done} done, {carried} carried over to {destination or 'the backlog'}."
+    try:
+        tx.execute("UPDATE sprints SET status = ?, goal = ?, end_ms = ?, start_ms = COALESCE(start_ms, ?),"
+                   " review_summary = COALESCE(?, review_summary), updated_ms = ? WHERE id = ?",
+                   (target, goal, end_ms, now if action == "start" else None, summary, now, sprint_id))
+    except sqlite3.IntegrityError:
+        raise Conflict("sprint_already_active", "Another sprint is active; complete it first.") from None
+    events.emit(tx, f"sprint.{target}", "sprint", sprint_id, actor, {"name": row["name"], "summary": summary}, now)
 
 
 def pending_notices(tx: Tx, session, cursor: int, include_pending: bool) -> tuple[list[dict], list[dict]]:
