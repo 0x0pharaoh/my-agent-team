@@ -11,3 +11,4 @@ server/src/my_team/static/
 .env
 .env.*
 !.env.example
+*.stackdump
