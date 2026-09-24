@@ -1,0 +1,21 @@
+# Hermes adapter for my-team — shell hooks definition
+# Rendered by `my-team install hermes` — do not edit manually.
+# Placeholder {cli_path} is replaced with the absolute path to my-team.exe.
+#
+# Install into ~/.hermes/config.yaml under the top-level `hooks:` key.
+# First-use consent is required for each (event, command) pair; see README §1.3.
+
+hooks:
+  on_session_start:
+    - command: "{cli_path} hook session-start --agent hermes"
+      timeout: 30
+      fail_closed: false
+  pre_llm_call:
+    - command: "{cli_path} hook pre-llm --agent hermes"
+      timeout: 30
+      fail_closed: false
+  pre_tool_call:
+    - matcher: "^my-team.*"
+      command: "{cli_path} hook pre-tool --agent hermes"
+      timeout: 30
+      fail_closed: true

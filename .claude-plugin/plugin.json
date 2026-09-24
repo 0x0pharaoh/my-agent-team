@@ -1,0 +1,33 @@
+{
+  "name": "my-team",
+  "version": "0.0.1",
+  "description": "Shared memory, messaging and Jira-style tickets for AI coding agents, supervised by one human from a local dashboard. Enforces minimal comments, strict DRY, and a requirement review on every prompt.",
+  "author": {
+    "name": "0x0pharaoh"
+  },
+  "homepage": "https://github.com/0x0pharaoh/my-agent-team",
+  "license": "MIT",
+  "keywords": [
+    "agents",
+    "memory",
+    "tickets",
+    "mcp",
+    "multi-agent"
+  ],
+  "userConfig": {
+    "cli_path": {
+      "type": "file",
+      "title": "my-team CLI",
+      "description": "Absolute path to the my-team executable (printed by `my-team install claude-code`).",
+      "required": true
+    }
+  },
+  "mcpServers": {
+    "my-team": {
+      "command": "${user_config.cli_path}",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}
