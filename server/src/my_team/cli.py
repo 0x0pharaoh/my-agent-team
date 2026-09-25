@@ -7,6 +7,7 @@ import sys
 import webbrowser
 
 from my_team import __version__, activation
+from my_team.hook import EVENTS, run
 
 
 def _serve(args) -> int:
@@ -84,7 +85,6 @@ def _scan(args) -> int:
 
 
 def _hook(args) -> int:
-    from my_team.hook import run
     return run(args.event, args.agent)
 
 
@@ -108,6 +108,18 @@ def _install(args) -> int:
     return module.install(yes=args.yes)
 
 
+def _doctor(args) -> int:
+    from my_team.doctor import run
+    return run()
+
+
+def _backup(args) -> int:
+    from my_team.db.backup import backup_all, databases
+    written = backup_all(force=True)
+    print("\n".join(map(str, written)) or "nothing to back up")
+    return 0 if len(written) == len(databases()) else 1
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="my-team", description="Local memory, messaging and tickets for AI agents.")
     parser.add_argument("--version", action="version", version=f"my-team {__version__}")
@@ -118,6 +130,8 @@ def main(argv=None) -> int:
     serve.set_defaults(handler=_serve)
     commands.add_parser("status", help="is the daemon running?").set_defaults(handler=_status)
     commands.add_parser("open", help="open the dashboard").set_defaults(handler=_open)
+    commands.add_parser("doctor", help="check the install, data and git").set_defaults(handler=_doctor)
+    commands.add_parser("backup", help="back up every database now").set_defaults(handler=_backup)
     commands.add_parser("setup", help="set the dashboard passphrase (interactive)").set_defaults(handler=_setup)
     commands.add_parser("mcp", help="MCP stdio server for agents").set_defaults(handler=_mcp)
 
@@ -127,7 +141,7 @@ def main(argv=None) -> int:
     scan.set_defaults(handler=_scan)
 
     hook = commands.add_parser("hook", help="agent hook handler (reads the hook payload on stdin)")
-    hook.add_argument("event", choices=["session-start", "prompt"])
+    hook.add_argument("event", choices=EVENTS)
     hook.add_argument("--agent", default="claude-code")
     hook.set_defaults(handler=_hook)
 
