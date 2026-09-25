@@ -51,8 +51,8 @@ def _changes(root: Path) -> dict:
     return counts
 
 
-def _fetch_disabled(root: Path) -> str | None:
-    version = git.run(root, "--version").strip()
+def git_too_old(cwd: Path) -> str | None:
+    version = git.run(cwd, "--version").strip()
     found = tuple(int(n) for n in re.findall(r"\d+", version)[:4])
     if os.name == "nt" and found < WINDOWS_FLOOR:
         return f"{version} is below the security floor 2.55.0.windows.4; upgrade Git for Windows to enable fetch."
@@ -82,7 +82,7 @@ def status(root: Path) -> dict:
         "changes": _changes(root), "commits": commits, "upstream": upstream, "ahead": ahead, "behind": behind,
         "fetched_ms": int(fetch_head.stat().st_mtime * 1000) if fetch_head.is_file() else None,
         "remotes": [{"name": name, "url": url} for name, url in remotes.items()],
-        "fetch_disabled": _fetch_disabled(root),
+        "fetch_disabled": git_too_old(root),
     }
 
 

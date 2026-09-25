@@ -14,6 +14,7 @@ from my_team.clock import now_ms
 from my_team.config import port as configured_port
 from my_team.daemon.app import API_VERSION, create_app
 from my_team.daemon.state import DaemonState
+from my_team.db.backup import backup_all
 from my_team.paths import private_data_dir
 
 IDLE_SHUTDOWN_MS = 2 * 3600_000
@@ -109,6 +110,7 @@ def run(port: int | None = None) -> int:
             print(f"my-team: {exc}. Stop that process or choose another port with `my-team serve --port`.",
                   file=sys.stderr)
             return 4
+        backup_all()  # before DaemonState opens and migrates the databases
         state = DaemonState(port=port)
         config = uvicorn.Config(create_app(state), log_level="warning", access_log=False, lifespan="off",
                                 timeout_graceful_shutdown=10)

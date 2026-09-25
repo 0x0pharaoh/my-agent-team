@@ -53,10 +53,15 @@ def _migrations(package: str) -> list[tuple[int, str]]:
     return sorted(found)
 
 
+def latest_version(package: str) -> int:
+    steps = _migrations(package)
+    return steps[-1][0] if steps else 0
+
+
 def migrate(conn: sqlite3.Connection, package: str) -> int:
     steps = _migrations(package)
     current = conn.execute("PRAGMA user_version").fetchone()[0]
-    latest = steps[-1][0] if steps else 0
+    latest = latest_version(package)
     if current > latest:
         raise SchemaTooNew(f"database schema {current} is newer than this my-team ({latest})")
     for number, sql in steps:
