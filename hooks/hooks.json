@@ -1,0 +1,66 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "plugin:my-team:my-team",
+            "tool": "hook_prompt",
+            "input": {
+              "session_id": "${session_id}",
+              "cwd": "${cwd}"
+            }
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${user_config.cli_path}",
+            "args": [
+              "hook",
+              "session-start"
+            ],
+            "timeout": 20
+          }
+        ]
+      },
+      {
+        "matcher": "clear|compact",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "plugin:my-team:my-team",
+            "tool": "hook_session_start",
+            "input": {
+              "session_id": "${session_id}",
+              "source": "${source}"
+            }
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "plugin:my-team:my-team",
+            "tool": "hook_pre_edit",
+            "input": {
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "file_path": "${tool_input.file_path}"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

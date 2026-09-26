@@ -1,0 +1,3 @@
+name: my-team
+description: my-team kanban bridge: mirror assigned tickets as Hermes tasks.
+version: 0.1.0

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "my-team",
+  "description": "Supervised multi-agent development: shared memory, tickets and messaging for Claude Code, Codex, OpenCode and Hermes.",
+  "owner": { "name": "0x0pharaoh" },
+  "plugins": [
+    {
+      "name": "my-team",
+      "source": "./",
+      "description": "Shared memory, messaging and Jira-style tickets for AI coding agents, supervised from a local dashboard.",
+      "category": "development"
+    }
+  ]
+}

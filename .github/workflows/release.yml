@@ -1,0 +1,45 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: astral-sh/setup-uv@v6
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: uv sync --group dev
+        working-directory: server
+      # Wheel only: the sdist omits gitignored static/, so 0.1.0 ships the wheel.
+      # --no-build-isolation keeps the ../README.md reference resolvable.
+      - run: uv build --no-build-isolation --wheel
+        working-directory: server
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: server/dist/*.whl
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
