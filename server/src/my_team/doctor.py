@@ -14,7 +14,8 @@ from my_team.domain.repo import git_too_old
 from my_team.paths import _current_user_sid, data_dir
 
 # Administrators and Owner Rights come from Python's mkdir(mode=0o700) on Windows; admins can take ownership anyway.
-ALLOWED_SIDS = {"SY", "BA", "OW"}
+# LA is the built-in Administrator account (RID 500): admin-equivalent, so allowing BA already covers it.
+ALLOWED_SIDS = {"SY", "BA", "OW", "LA"}
 
 
 def run() -> int:

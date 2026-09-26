@@ -29,7 +29,8 @@ def test_scan_finds_planted_rules_and_skips(tmp_path, capsys):
     (repo / "binary.dat").write_bytes(b"abc\0def")
     write(repo / "node_modules" / "ignored.js", "const token = 'abcdefghijklmnop';\n")
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=test@example.com", "-c", "user.name=test",
+                    "commit", "-qm", "fixture"], cwd=repo, check=True)
 
     result = scan(repo)
     rules = [finding["rule"] for finding in result["findings"]]
