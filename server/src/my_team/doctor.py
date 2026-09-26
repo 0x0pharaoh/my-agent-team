@@ -4,6 +4,7 @@ import re
 import sqlite3
 import subprocess
 import tempfile
+import tomllib
 from contextlib import closing
 from pathlib import Path
 
@@ -11,6 +12,10 @@ from my_team import __version__, activation, client, git
 from my_team.db import backup
 from my_team.db.engine import latest_version
 from my_team.domain.repo import git_too_old
+from my_team.installers.codex import codex_home
+from my_team.installers.hermes import config_path as hermes_config_path
+from my_team.installers.hermes import hermes_home
+from my_team.installers.opencode import config_dir as opencode_config_dir
 from my_team.paths import _current_user_sid, data_dir
 
 # Administrators and Owner Rights come from Python's mkdir(mode=0o700) on Windows; admins can take ownership anyway.
@@ -42,6 +47,101 @@ def _checks():
         yield _database(path, package)
     yield _activation()
     yield _git()
+    yield from _adapters()
+
+
+def _adapters():
+    home = Path(os.environ.get("HOME") or Path.home())
+    yield _claude_plugin(home)
+    yield _agent_skill(home)
+    yield _codex()
+    yield _opencode(home)
+    yield _hermes()
+
+
+def _claude_plugin(home: Path) -> tuple[str, str]:
+    try:
+        settings = json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError, OSError):
+        return "warn", "Claude Code settings not found; run `my-team install claude-code`"
+    if settings.get("enabledPlugins", {}).get("my-team@my-team") is True:
+        return "pass", "Claude Code plugin my-team enabled"
+    return "warn", "Claude Code plugin my-team not enabled"
+
+
+def _agent_skill(home: Path) -> tuple[str, str]:
+    if (home / ".agents" / "skills" / "my-team" / "SKILL.md").is_file():
+        return "pass", "skill ~/.agents/skills/my-team/SKILL.md present"
+    return "warn", "skill missing under ~/.agents/skills/my-team"
+
+
+def _codex() -> tuple[str, str]:
+    try:
+        data = tomllib.loads((codex_home() / "config.toml").read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError, OSError):
+        return "warn", "Codex config not found; run `my-team install codex`"
+    if data.get("mcp_servers", {}).get("my-team"):
+        return "pass", "Codex MCP server my-team registered"
+    return "warn", "Codex config lacks mcp_servers.my-team"
+
+
+def _opencode(home: Path) -> tuple[str, str]:
+    target = opencode_config_dir(home)
+    if not (target / "plugins" / "my-team.js").is_file():
+        return "warn", "OpenCode plugin missing; run `my-team install opencode`"
+    for name in ("opencode.jsonc", "opencode.json"):
+        if (target / name).is_file():
+            return (("pass", "OpenCode plugin + MCP entry present") if _mcp_entry(target / name)
+                    else ("warn", f"OpenCode plugin present but no MCP entry in {name}"))
+    return "warn", "OpenCode plugin present but no opencode.json(c) found"
+
+
+def _mcp_entry(path: Path) -> bool:
+    try:
+        data = json.loads(_without_comments(path.read_text(encoding="utf-8")))
+    except (ValueError, OSError):
+        return False
+    return bool(data.get("mcp", {}).get("servers", {}).get("my-team"))
+
+
+def _without_comments(text: str) -> str:
+    """Strip // and /* */ comments plus trailing commas outside strings, for JSONC sniffing."""
+    out, i, string = [], 0, None
+    while i < len(text):
+        ch = text[i]
+        if string:
+            out.append(ch)
+            if ch == "\\":
+                out.append(text[i + 1:i + 2])
+                i += 2
+                continue
+            if ch == string:
+                string = None
+        elif ch in "\"'":
+            string = ch
+            out.append(ch)
+        elif text.startswith("//", i):
+            while i < len(text) and text[i] != "\n":
+                i += 1
+            continue
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            i = len(text) if end < 0 else end + 2
+            continue
+        else:
+            out.append(ch)
+        i += 1
+    return re.sub(r",(\s*[}\]])", r"\1", "".join(out))
+
+
+def _hermes() -> tuple[str, str]:
+    try:
+        text = hermes_config_path(hermes_home()).read_text(encoding="utf-8")
+    except OSError:
+        return "warn", "Hermes config not found; run `my-team install hermes`"
+    if "--agent hermes" in text:
+        return "pass", "Hermes hooks reference my-team"
+    return "warn", "Hermes config lacks my-team hooks"
 
 
 def _private(path: Path) -> tuple[str, str]:

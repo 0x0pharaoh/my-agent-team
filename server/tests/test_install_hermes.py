@@ -63,7 +63,7 @@ class TestInstallHermes:
         home.mkdir(parents=True, exist_ok=True)
         with (
             patch.object(hermes_installer, "_hermes_cli", return_value="/no/such/hermes"),
-            patch.object(hermes_installer, "_hermes_home", return_value=home),
+            patch.object(hermes_installer, "hermes_home", return_value=home),
             patch("my_team.installers.hermes.confirm", return_value=False),
         ):
             ret = hermes_installer.install(yes=False)
@@ -71,7 +71,7 @@ class TestInstallHermes:
 
     def test_install_skill_copies_tree(self, tmp_path: Path) -> None:
         home = tmp_path / "hermes-home"
-        with patch.object(hermes_installer, "_hermes_home", return_value=home):
+        with patch.object(hermes_installer, "hermes_home", return_value=home):
             hermes_installer._install_skill(home)
             dst = home / "skills" / "software-development" / "my-team"
             assert dst.is_dir()
@@ -82,7 +82,7 @@ class TestInstallHermes:
         skill_dest = home / "skills" / "software-development" / "my-team"
         skill_dest.mkdir(parents=True, exist_ok=True)
         (skill_dest / "SKILL.md").write_text("existing\n")
-        with patch.object(hermes_installer, "_hermes_home", return_value=home):
+        with patch.object(hermes_installer, "hermes_home", return_value=home):
             hermes_installer._install_skill(home)
             assert skill_dest.is_dir()
 
@@ -170,7 +170,7 @@ class TestInstallHermes:
         home = tmp_path / "fake-home"
         home.mkdir(parents=True, exist_ok=True)
         with (
-            patch.object(hermes_installer, "_hermes_home", return_value=home),
+            patch.object(hermes_installer, "hermes_home", return_value=home),
             patch.object(hermes_installer, "_hermes_cli", return_value="/no/such/hermes"),
             patch.dict(os.environ, {"HERMES_HOME": str(home), "LOCALAPPDATA": str(tmp_path)}, clear=False),
         ):
@@ -194,7 +194,7 @@ class TestInstallHermes:
     def test_ensure_autostart(self, tmp_path: Path) -> None:
         home = tmp_path / "hermes-home"
         with (
-            patch.object(hermes_installer, "_hermes_home", return_value=home),
+            patch.object(hermes_installer, "hermes_home", return_value=home),
             patch("my_team.installers.hermes.config_load", return_value={}),
             patch("my_team.installers.hermes.config_save") as save,
         ):
@@ -210,7 +210,7 @@ class TestInstallHermes:
         with (
             patch.dict(os.environ, patched_env, clear=False),
             patch.object(hermes_installer, "_hermes_cli", return_value=str(hermes_cli)),
-            patch.object(hermes_installer, "_hermes_home", return_value=home),
+            patch.object(hermes_installer, "hermes_home", return_value=home),
             patch.object(hermes_installer, "my_team_cli_path", return_value=cli),
             patch("subprocess.run") as mock_run,
             patch("my_team.installers.hermes.confirm") as confirm_mock,
@@ -238,7 +238,7 @@ class TestInstallHermes:
         with (
             patch.dict(os.environ, patched_env, clear=False),
             patch.object(hermes_installer, "_hermes_cli", return_value="/no/such/hermes"),
-            patch.object(hermes_installer, "_hermes_home", return_value=home),
+            patch.object(hermes_installer, "hermes_home", return_value=home),
             patch("subprocess.run", side_effect=FileNotFoundError("not found")),
         ):
             ret = hermes_installer.install(yes=True)

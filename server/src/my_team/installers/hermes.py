@@ -19,7 +19,7 @@ HERMES_HOOKS_AGENT = "hermes"
 PLUGIN_SRC = adapter("hermes", "plugin")
 
 
-def _hermes_home() -> Path:
+def hermes_home() -> Path:
     env = os.environ.get("HERMES_HOME")
     if env:
         return Path(env).expanduser().resolve()
@@ -33,7 +33,7 @@ def _skill_dest(home: Path) -> Path:
     return home / "skills" / "software-development" / "my-team"
 
 
-def _config_path(home: Path) -> Path:
+def config_path(home: Path) -> Path:
     return home / "config.yaml"
 
 
@@ -128,7 +128,7 @@ def _ensure_mcp(home: Path, hermes_cli: str, myteam_cli: str) -> None:
 
 def _ensure_hooks(home: Path, hermes_cli: str, myteam_cli: str) -> None:
     """Append shell hooks to config.yaml directly; a `hermes hooks` CLI does not exist."""
-    cfg_path = _config_path(home)
+    cfg_path = config_path(home)
     _merge_hooks_text(cfg_path, myteam_cli)
 
 
@@ -171,7 +171,7 @@ def _build_plan(home: Path, hermes_cli: str, myteam_cli: str) -> list[str]:
 
 
 def install(yes: bool) -> int:
-    home = _hermes_home()
+    home = hermes_home()
     hermes_cli = _hermes_cli()
     myteam_cli = my_team_cli_path()
     if not confirm(_build_plan(home, hermes_cli, myteam_cli), yes):

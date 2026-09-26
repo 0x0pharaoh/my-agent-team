@@ -8,21 +8,26 @@ from my_team import config
 from my_team.installers import cli_path, confirm, copy_skill
 
 
+def codex_home() -> Path:
+    home = Path(os.environ.get("HOME") or Path.home())
+    return Path(os.environ.get("CODEX_HOME") or home / ".codex")
+
+
 def install(yes: bool = False) -> int:
     home = Path(os.environ.get("HOME") or Path.home())
-    codex_home = Path(os.environ.get("CODEX_HOME") or home / ".codex")
+    chome = codex_home()
     cli = str(Path(cli_path()).resolve())
     plan = [
         f"copy my-team skill to {home / '.agents' / 'skills' / 'my-team'}",
         "add Codex MCP server my-team if missing",
-        f"merge my-team hooks into {codex_home / 'hooks.json'}",
+        f"merge my-team hooks into {chome / 'hooks.json'}",
         "let the my-team daemon start on demand (no OS service)",
     ]
     if not confirm(plan, yes):
         return 1
     copy_skill(home / ".agents" / "skills" / "my-team")
     _add_mcp(cli)
-    _write_hooks(codex_home, cli)
+    _write_hooks(chome, cli)
     config.save(autostart=True)
     print("\nDone. Trust the my-team hooks once in Codex's /hooks screen, then run $my-team init in a project.")
     return 0
