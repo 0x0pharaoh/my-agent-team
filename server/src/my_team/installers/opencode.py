@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 from my_team import config
-from my_team.installers import cli_path, confirm, copy_skill, skill_source
+from my_team.installers import adapter, cli_path, confirm, copy_skill
 
 PLACEHOLDER = '"__MY_TEAM_CLI__"'
 
@@ -46,7 +46,7 @@ def install(yes: bool) -> int:
 
 
 def _write_plugin(target: Path, cli: str) -> None:
-    source = skill_source().parents[1] / "adapters" / "opencode" / "my-team.js"
+    source = adapter("opencode", "my-team.js")
     content = source.read_text(encoding="utf-8").replace(PLACEHOLDER, json.dumps(cli))
     path = target / "plugins" / "my-team.js"
     if path.is_file() and path.read_text(encoding="utf-8") == content:

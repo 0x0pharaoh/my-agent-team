@@ -10,13 +10,13 @@ from pathlib import Path
 
 from my_team.config import load as config_load
 from my_team.config import save as config_save
-from my_team.installers import cli_path as my_team_cli_path
+from my_team.installers import adapter, cli_path as my_team_cli_path
 from my_team.installers import confirm, copy_skill
 
 HERMES_MCP_SERVER = "my-team"
 HERMES_HOOKS_AGENT = "hermes"
 
-PLUGIN_SRC = Path(__file__).resolve().parents[4] / "adapters" / "hermes" / "plugin"
+PLUGIN_SRC = adapter("hermes", "plugin")
 
 
 def _hermes_home() -> Path:

@@ -16,11 +16,23 @@ def checkout() -> Path | None:
     return root if (root / ".claude-plugin" / "marketplace.json").is_file() else None
 
 
-def skill_source() -> Path:
+def content_root() -> Path:
+    """skills/ and adapters/ location: wheel data when packaged, else the repo checkout."""
+    packaged = Path(__file__).resolve().parent.parent / "data"
+    if (packaged / "skills" / "my-team" / "SKILL.md").is_file():
+        return packaged
     root = checkout()
     if root is None:
-        raise FileNotFoundError("skill files ship with the repository checkout; install with `uv tool install --editable`")
-    return root / "skills" / "my-team"
+        raise FileNotFoundError("skill files ship with the my-team-agents wheel or a repository checkout")
+    return root
+
+
+def adapter(*parts: str) -> Path:
+    return content_root().joinpath("adapters", *parts)
+
+
+def skill_source() -> Path:
+    return content_root() / "skills" / "my-team"
 
 
 def copy_skill(target: Path) -> bool:

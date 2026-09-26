@@ -5,15 +5,15 @@ coding sessions (Claude Code, Codex, OpenCode, Hermes) that share project memory
 messages, and follow the same rules: minimal comments, strict DRY, a requirement review on every prompt, and five
 authoritative project documents.
 
-**Status: pre-alpha.** It works end to end with Claude Code. Codex, OpenCode and Hermes can reach it over MCP; their
-full adapters are in progress.
+**Status: 0.1.0 pre-release.** Daemon, tickets, memory, messaging, dashboard, and installers for Claude Code,
+Codex, OpenCode, and Hermes work end to end.
 
-## Use it (Claude Code, Windows/macOS/Linux)
+## Use it (Windows/macOS/Linux)
 
 ```bash
-uv tool install --editable ./server        # puts `my-team` on PATH
-my-team install claude-code                # daemon autostart + plugin (asks first)
-my-team setup                              # dashboard passphrase
+uv tool install my-team-agents                 # release (or `uv tool install --editable ./server` for dev)
+my-team install <agent>                        # claude-code | codex | opencode | hermes (asks first)
+my-team setup                                  # dashboard passphrase
 ```
 
 In any project in Claude Code, run `/my-team:init`. It binds the project, switches my-team on, drafts the five docs
