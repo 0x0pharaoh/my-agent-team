@@ -8,6 +8,8 @@ build/
 *.egg-info/
 node_modules/
 server/src/my_team/static/
+ui/test-results/
+ui/playwright-report/
 .env
 .env.*
 !.env.example
