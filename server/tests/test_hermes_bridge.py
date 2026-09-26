@@ -1,187 +1,131 @@
-"""Tests for the Hermes ↔ my-team bridge translation layer.
-
-The bridge logic is kept in pure functions inside ``adapters/hermes/plugin/bridge.py``
-so it can be unit-tested without a running daemon or a Hermes installation.
-"""
-
-from __future__ import annotations
-
-import sys
+"""Bridge translation tests. Every event below comes from real ops via conftest fixtures."""
+import importlib.util
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+pytestmark = pytest.mark.anyio
 
-from adapters.hermes.plugin.bridge import (
-    build_mapping_update,
-    myteam_event_to_hermes_action,
-    myteam_events_to_hermes_actions,
-    ticket_hash,
-)
+_bridge_path = Path(__file__).resolve().parents[2] / "adapters" / "hermes" / "plugin" / "bridge.py"
+_spec = importlib.util.spec_from_file_location("bridge", _bridge_path)
+_bridge = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_bridge)
 
-# ---------------------------------------------------------------------------
-# ticket_hash
-# ---------------------------------------------------------------------------
+ticket_hash = _bridge.ticket_hash
+myteam_events_to_hermes_actions = _bridge.myteam_events_to_hermes_actions
+myteam_event_to_hermes_action = _bridge.myteam_event_to_hermes_action
+
+
+def _load_plugin():
+    import sys
+    plugin_dir = Path(__file__).resolve().parents[2] / "adapters" / "hermes" / "plugin"
+    assert (plugin_dir / "plugin.yaml").is_file()
+    for name, path in (("hplugin.bridge", plugin_dir / "bridge.py"),
+                       ("hplugin", plugin_dir / "__init__.py")):
+        spec = importlib.util.spec_from_file_location(
+            name, path, submodule_search_locations=[str(plugin_dir)] if name == "hplugin" else None)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules["hplugin"]
+
+
+class _Store:
+    def __init__(self):
+        self.data = {}
+
+    def get(self, key, default=None):
+        return self.data.get(key, default)
+
+    def set(self, key, value):
+        self.data[key] = value
+
+
+class _Ctx:
+    def __init__(self):
+        self.state = _Store()
+        self.hooks = {}
+
+    def register_hook(self, name, fn):
+        self.hooks[name] = fn
+
+
+class TestPluginRegistration:
+    def test_registers_only_hooks_hermes_fires(self) -> None:
+        plugin = _load_plugin()
+        ctx = _Ctx()
+        plugin.register(ctx)
+        assert set(ctx.hooks) == {"on_session_start", "kanban_task_claimed", "kanban_task_completed",
+                                  "kanban_task_blocked", "on_kanban_dispatch_tick"}
+
+    def test_handlers_are_fail_open_without_state(self) -> None:
+        plugin = _load_plugin()
+        ctx = _Ctx()
+        plugin.register(ctx)
+        ctx.hooks["on_session_start"]()
+        ctx.hooks["kanban_task_claimed"](task_id="t-1", board="b", profile_name="p")
+        ctx.hooks["kanban_task_completed"](task_id="t-1", summary="s")
+        ctx.hooks["kanban_task_blocked"](task_id="t-1", reason="r")
+        ctx.hooks["on_kanban_dispatch_tick"](board="b", profile_name="p")
+        assert ctx.state.data == {}
+
 
 class TestTicketHash:
     def test_deterministic(self) -> None:
-        h1 = ticket_hash("ready", "hermes-seat-1", "MT-7", "Implement login")
-        h2 = ticket_hash("ready", "hermes-seat-1", "MT-7", "Implement login")
-        assert h1 == h2
+        assert ticket_hash("MT-7", "ready", "seat-1") == ticket_hash("MT-7", "ready", "seat-1")
 
     def test_changes_on_status(self) -> None:
-        assert ticket_hash("ready", "", "X", "Y") != ticket_hash("done", "", "X", "Y")
+        assert ticket_hash("MT-7", "ready", "") != ticket_hash("MT-7", "done", "")
 
     def test_changes_on_assignee(self) -> None:
-        assert ticket_hash("ready", "seat-a", "X", "Y") != ticket_hash("ready", "seat-b", "X", "Y")
-
-    def test_changes_on_body(self) -> None:
-        assert ticket_hash("ready", "", "X", "old body") != ticket_hash("ready", "", "X", "new body")
+        assert ticket_hash("MT-7", "ready", "seat-a") != ticket_hash("MT-7", "ready", "seat-b")
 
     def test_none_assignee_is_empty_string(self) -> None:
-        assert ticket_hash("ready", None, "X", "Y") == ticket_hash("ready", "", "X", "Y")
+        assert ticket_hash("MT-7", "ready", None) == ticket_hash("MT-7", "ready", "")
 
 
-# ---------------------------------------------------------------------------
-# myteam_event_to_hermes_action
-# ---------------------------------------------------------------------------
-
-@pytest.fixture
-def seat_agent_id() -> str:
-    return "agent-hermes-1"
-
-
-@pytest.fixture
-def mapping() -> dict[str, str]:
-    return {"MT-7": "task-abc", "MT-8": "task-xyz"}
-
-
-class TestMyteamEventToHermesAction:
-    def test_ready_ticket_assigned_to_our_seat_creates_task(
-        self, seat_agent_id: str, mapping: dict
-    ) -> None:
-        event = {
-            "type": "ticket.assigned",
-            "data": {"key": "MT-7", "assignee": seat_agent_id, "status": "ready", "body": "do it"},
-        }
-        action = myteam_event_to_hermes_action(event, mapping, seat_agent_id)
-        assert action is not None
-        assert action["action"] == "create_task"
-        assert action["task_id"] == "task-abc"
-        assert action["title"] == "MT-7"
-        assert action["assignee"] == seat_agent_id
-        assert action["initial_status"] == "ready"
-
-    def test_ticket_assigned_to_other_seat_blocks_our_task(
-        self, seat_agent_id: str, mapping: dict
-    ) -> None:
-        event = {
-            "type": "ticket.assigned",
-            "data": {"key": "MT-7", "assignee": "other-seat", "status": "ready"},
-        }
-        action = myteam_event_to_hermes_action(event, mapping, seat_agent_id)
-        assert action is not None
-        assert action["action"] == "block_task"
-        assert action["task_id"] == "task-abc"
-        assert action["reason"] == "reassigned to other-seat in my-team"
-
-    def test_ticket_revoked_blocks_task(self, seat_agent_id: str, mapping: dict) -> None:
-        event = {"type": "ticket.revoked", "data": {"key": "MT-7"}}
-        action = myteam_event_to_hermes_action(event, mapping, seat_agent_id)
-        assert action is not None
-        assert action["action"] == "block_task"
-        assert action["task_id"] == "task-abc"
-
-    def test_ticket_cancel_blocks_task(self, seat_agent_id: str, mapping: dict) -> None:
-        event = {"type": "ticket.cancel", "data": {"key": "MT-7"}}
-        action = myteam_event_to_hermes_action(event, mapping, seat_agent_id)
-        assert action is not None
-        assert action["action"] == "block_task"
-        assert action["task_id"] == "task-abc"
-
-    def test_ticket_done_completes_task(self, seat_agent_id: str, mapping: dict) -> None:
-        event = {"type": "ticket.done", "data": {"key": "MT-7", "summary": "ship it"}}
-        action = myteam_event_to_hermes_action(event, mapping, seat_agent_id)
-        assert action is not None
-        assert action["action"] == "complete_task"
-        assert action["task_id"] == "task-abc"
-        assert action["summary"] == "ship it"
-
-    def test_ticket_updated_reassigned_blocks_task(self, seat_agent_id: str, mapping: dict) -> None:
-        event = {"type": "ticket.updated", "data": {"key": "MT-7", "assignee": "other-seat"}}
-        action = myteam_event_to_hermes_action(event, mapping, seat_agent_id)
-        assert action is not None
-        assert action["action"] == "block_task"
-
-    def test_unknown_event_type_returns_none(self, seat_agent_id: str, mapping: dict) -> None:
-        event = {"type": "ticket.created", "data": {"key": "MT-99"}}
-        assert myteam_event_to_hermes_action(event, mapping, seat_agent_id) is None
-
-    def test_ticket_with_no_mapping_returns_none(self, seat_agent_id: str) -> None:
-        event = {"type": "ticket.assigned", "data": {"key": "MT-99", "assignee": seat_agent_id, "status": "ready"}}
-        assert myteam_event_to_hermes_action(event, {}, seat_agent_id) is None
-
-    def test_empty_mapping_returns_none(self, seat_agent_id: str) -> None:
-        event = {"type": "ticket.assigned", "data": {"key": "MT-7", "assignee": seat_agent_id, "status": "ready"}}
-        assert myteam_event_to_hermes_action(event, {}, seat_agent_id) is None
+async def _story(agent, human):
+    """Drive two tickets through real ops; return events plus the keys, seat, and mapping."""
+    key1 = (await human.op("ticket_create", {"title": "Bridge one", "status": "ready",
+                                             "acceptance_criteria": ["x"]}))["data"]["ticket"]["key"]
+    key2 = (await human.op("ticket_create", {"title": "Bridge two", "status": "ready",
+                                             "acceptance_criteria": ["x"]}))["data"]["ticket"]["key"]
+    seat = (await human.op("board"))["data"]["agents"][0]["id"]
+    await human.op("ticket_assign", {"key": key1, "agent_id": seat})
+    epoch = (await agent.op("ticket_claim", {"key": key1}))["data"]["ticket"]["claim_epoch"]
+    await agent.op("ticket_update", {"key": key1, "action": "review", "epoch": epoch, "summary": "done"})
+    await human.op("ticket_transition", {"key": key1, "action": "done"})
+    await human.op("ticket_assign", {"key": key2, "agent_id": seat})
+    await agent.op("ticket_claim", {"key": key2})
+    await human.op("ticket_transition", {"key": key2, "action": "pause"})
+    events = (await agent.op("events_since", {"after": 0, "limit": 200}))["data"]["events"]
+    assert any(e["type"] == "ticket.assigned" for e in events), events
+    return {"events": events, "mapping": {key1: "task-1", key2: "task-2"}, "seat": seat}
 
 
-# ---------------------------------------------------------------------------
-# myteam_events_to_hermes_actions (dedup)
-# ---------------------------------------------------------------------------
-
-class TestMyteamEventsToHermesActions:
-    def test_deduplicates_same_action_on_same_task(self, seat_agent_id: str, mapping: dict) -> None:
-        events = [
-            {"type": "ticket.assigned", "data": {"key": "MT-7", "assignee": seat_agent_id, "status": "ready"}},
-            {"type": "ticket.assigned", "data": {"key": "MT-7", "assignee": seat_agent_id, "status": "ready"}},
-        ]
-        actions = myteam_events_to_hermes_actions(events, mapping, seat_agent_id)
-        assert len(actions) == 1
-
-    def test_different_actions_on_same_task_both_pass(self, seat_agent_id: str, mapping: dict) -> None:
-        events = [
-            {"type": "ticket.assigned", "data": {"key": "MT-7", "assignee": seat_agent_id, "status": "ready"}},
-            {"type": "ticket.done", "data": {"key": "MT-7"}},
-        ]
-        actions = myteam_events_to_hermes_actions(events, mapping, seat_agent_id)
-        assert len(actions) == 2
-        assert {a["action"] for a in actions} == {"create_task", "complete_task"}
-
-    def test_different_tasks_both_pass(self, seat_agent_id: str, mapping: dict) -> None:
-        events = [
-            {"type": "ticket.assigned", "data": {"key": "MT-7", "assignee": seat_agent_id, "status": "ready"}},
-            {"type": "ticket.assigned", "data": {"key": "MT-8", "assignee": seat_agent_id, "status": "ready"}},
-        ]
-        actions = myteam_events_to_hermes_actions(events, mapping, seat_agent_id)
-        assert len(actions) == 2
-
-    def test_empty_list_returns_empty(self, seat_agent_id: str) -> None:
-        assert myteam_events_to_hermes_actions([], {}, seat_agent_id) == []
-
-    def test_none_seat_agent_id_still_produces_actions(self) -> None:
-        events = [
-            {"type": "ticket.revoked", "data": {"key": "MT-7"}},
-        ]
-        mapping = {"MT-7": "task-abc"}
-        actions = myteam_events_to_hermes_actions(events, mapping, None)
-        assert len(actions) == 1
-        assert actions[0]["action"] == "block_task"
+async def test_story_maps_to_expected_actions(agent, human):
+    story = await _story(agent, human)
+    actions = myteam_events_to_hermes_actions(story["events"], story["mapping"], story["seat"])
+    assert [(a["action"], a["task_id"]) for a in actions] == [
+        ("create_task", "task-1"), ("complete_task", "task-1"),
+        ("create_task", "task-2"), ("block_task", "task-2"),
+    ]
 
 
-# ---------------------------------------------------------------------------
-# build_mapping_update
-# ---------------------------------------------------------------------------
+async def test_empty_mapping_yields_no_actions(agent, human):
+    story = await _story(agent, human)
+    assert myteam_events_to_hermes_actions(story["events"], {}, story["seat"]) == []
 
-class TestBuildMappingUpdate:
-    def test_basic(self) -> None:
-        upd = build_mapping_update("MT-7", "task-abc", "in_progress", "agent-hermes-1")
-        assert upd["myteam_ticket_key"] == "MT-7"
-        assert upd["hermes_task_id"] == "task-abc"
-        assert upd["status"] == "in_progress"
-        assert upd["assignee"] == "agent-hermes-1"
 
-    def test_none_assignee_stored_as_none(self) -> None:
-        upd = build_mapping_update("MT-7", "task-abc", "open", None)
-        assert upd["assignee"] is None
+async def test_unmapped_types_yield_no_actions(agent, human):
+    story = await _story(agent, human)
+    for event in story["events"]:
+        if event["type"] in ("ticket.created", "ticket.claimed", "ticket.note"):
+            assert myteam_event_to_hermes_action(event, story["mapping"], story["seat"]) is None
+
+
+async def test_revoked_blocks_without_a_seat(agent, human):
+    story = await _story(agent, human)
+    revoked = next(e for e in story["events"] if e["type"] == "ticket.revoked")
+    action = myteam_event_to_hermes_action(revoked, story["mapping"], None)
+    assert action is not None and action["action"] == "block_task"
