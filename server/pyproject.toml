@@ -31,8 +31,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/my_team"]
+artifacts = ["src/my_team/static"]
 
 [tool.hatch.build.force-include]
 "../skills" = "my_team/data/skills"
 "../adapters" = "my_team/data/adapters"
-"src/my_team/static" = "my_team/static"
