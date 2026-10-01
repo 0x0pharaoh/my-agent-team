@@ -115,7 +115,7 @@ class Shim:
             return explicit
         if self.agent_type == "claude-code" and os.environ.get("CLAUDE_CODE_SESSION_ID"):
             return self.primary or os.environ["CLAUDE_CODE_SESSION_ID"]
-        for key in ("threadId", "sessionID"):
+        for key in ("threadId", "sessionID", "ai.opencode/sessionID"):
             if meta and meta.get(key):
                 return str(meta[key])
         return self.primary or self.fallback_id

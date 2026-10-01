@@ -5,6 +5,7 @@ import pytest
 from mcp import types
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
+from my_team.shim.server import Shim
 
 pytestmark = pytest.mark.anyio
 
@@ -40,3 +41,7 @@ async def test_claude_code_sees_no_prompts(repo):
             assert (await mcp.list_prompts()).prompts == []
             with pytest.raises(Exception):
                 await mcp.get_prompt("init")
+
+
+def test_native_id_reads_namespaced_opencode_session():
+    assert Shim().native_id({"ai.opencode/sessionID": "ses_1"}) == "ses_1"
