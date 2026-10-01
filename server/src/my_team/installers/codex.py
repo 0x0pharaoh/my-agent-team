@@ -52,13 +52,17 @@ def _write_hooks(codex_home: Path, cli: str) -> None:
     hooks = data.setdefault("hooks", {})
     for event in ("SessionStart", "UserPromptSubmit"):
         hooks[event] = [entry for entry in hooks.get(event, []) if not _ours(entry)]
-    hooks["SessionStart"].append({"matcher": "startup|resume|clear|compact", "hooks": [_session_start(cli)]})
-    hooks["UserPromptSubmit"].append({"hooks": [PROMPT_HOOK]})
+    hooks["SessionStart"].append({"matcher": "startup|resume|clear|compact", "hooks": [_command(cli, "session-start")]})
+    hooks["UserPromptSubmit"].append({"hooks": [_command(cli, "prompt")]})
     hooks_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-PROMPT_HOOK = {"type": "mcp_tool", "server": "my-team", "tool": "hook_prompt",
-               "input": {"session_id": "${session_id}", "cwd": "${cwd}"}, "timeout": 20}
+def _command(cli: str, event: str) -> dict:
+    """Codex runs command as a shell string (commandWindows on Windows); there is no exec-form args field."""
+    tail = f"hook {event} --agent codex"
+    windows = f"& '{cli}' {tail}" if " " in cli else f"{cli} {tail}"
+    return {"type": "command", "command": f"{shlex.quote(cli)} {tail}", "commandWindows": windows,
+            "timeout": 20}
 
 
 def _read_hooks(path: Path) -> dict:
@@ -67,14 +71,6 @@ def _read_hooks(path: Path) -> dict:
     except FileNotFoundError:
         return {"hooks": {}}
     return data if isinstance(data.get("hooks"), dict) else {"hooks": {}}
-
-
-def _session_start(cli: str) -> dict:
-    """Codex runs command as a shell string (commandWindows on Windows); there is no exec-form args field."""
-    tail = "hook session-start --agent codex"
-    windows = f"& '{cli}' {tail}" if " " in cli else f"{cli} {tail}"
-    return {"type": "command", "command": f"{shlex.quote(cli)} {tail}", "commandWindows": windows, "timeout": 20,
-            "statusMessage": "Loading my-team context"}
 
 
 def _ours(entry) -> bool:

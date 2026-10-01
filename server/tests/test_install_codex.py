@@ -73,4 +73,6 @@ def test_codex_hooks_use_shell_strings_and_replace_old_entries(tmp_path, monkeyp
     start = hooks["SessionStart"][0]["hooks"][0]
     assert "args" not in start and start["command"].endswith("hook session-start --agent codex")
     assert start["commandWindows"] == "& 'C:/Program Files/my team/my-team.exe' hook session-start --agent codex"
-    assert hooks["UserPromptSubmit"] == [{"hooks": [codex.PROMPT_HOOK]}]
+    prompt = hooks["UserPromptSubmit"][0]["hooks"][0]
+    assert prompt["type"] == "command" and prompt["command"].endswith("hook prompt --agent codex")
+    assert "mcp_tool" not in hooks_path.read_text(encoding="utf-8")
