@@ -18,6 +18,12 @@ def _source() -> Path:
     return _root() / market["plugins"][0]["source"]
 
 
+def test_plugin_version_matches_package():
+    from my_team import __version__
+    manifest = json.loads((_source() / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    assert manifest["version"] == __version__
+
+
 def test_plugin_source_is_small_and_symlink_free():
     source = _source()
     assert (source / ".claude-plugin" / "plugin.json").is_file()
