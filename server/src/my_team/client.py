@@ -5,6 +5,7 @@ import secrets
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from my_team import auth, config
 from my_team.clock import now_ms
@@ -46,8 +47,14 @@ def _verified(info: dict, secret: bytes) -> bool:
             and body.get("proof") == auth.health_proof(secret, nonce, info["port"]))
 
 
+def _daemon_python() -> str:
+    # A uv venv's python.exe is a launcher; its console child would open a visible window. pythonw has no console.
+    gui = Path(sys.executable).with_name("pythonw.exe")
+    return str(gui) if os.name == "nt" and gui.is_file() else sys.executable
+
+
 def spawn_daemon() -> None:
-    command = [sys.executable, "-m", "my_team", "serve"]
+    command = [_daemon_python(), "-m", "my_team", "serve"]
     options = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
     if os.name == "nt":
         flags = _DETACHED | _NEW_GROUP | _NO_WINDOW
