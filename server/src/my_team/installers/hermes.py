@@ -1,6 +1,7 @@
 """my-team install for Hermes — idempotent installation into a Hermes profile."""
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import re
@@ -62,25 +63,29 @@ def _install_skill(home: Path) -> None:
         print(f"skill already installed: {dst}")
 
 
-def _hooks_registered(text: str) -> bool:
-    return "--agent hermes" in text
+def _hook_entries(myteam_cli: str) -> list[tuple[str, str | None, str]]:
+    base = f'"{myteam_cli}"'
+    return [("pre_llm_call", None, f"{base} hook prompt --agent hermes"),
+            ("pre_tool_call", "mcp__my_team__.*", f"{base} hook tool --agent hermes"),
+            ("pre_tool_call", "write_file|patch", f"{base} hook pre-edit --agent hermes")]
+
+
+def _hooks_registered(text: str, myteam_cli: str) -> bool:
+    return all(json.dumps(cmd) in text for _, _, cmd in _hook_entries(myteam_cli))
 
 
 def _hooks_text_block(myteam_cli: str) -> str:
     """Hook commands as JSON strings: Hermes splits with shlex posix=False, so one quote layer survives."""
-    cmd_prompt = f'"{myteam_cli}" hook prompt --agent hermes'
-    cmd_tool = f'"{myteam_cli}" hook tool --agent hermes'
-    cmd_pre_edit = f'"{myteam_cli}" hook pre-edit --agent hermes'
-    return (
-        "hooks:\n"
-        f"  pre_llm_call:\n"
-        f"    - command: {json.dumps(cmd_prompt)}\n"
-        f"  pre_tool_call:\n"
-        f'    - matcher: "mcp__my_team__.*"\n'
-        f"      command: {json.dumps(cmd_tool)}\n"
-        f'    - matcher: "write_file|patch"\n'
-        f"      command: {json.dumps(cmd_pre_edit)}\n"
-    )
+    lines = ["hooks:"]
+    for event, group in itertools.groupby(_hook_entries(myteam_cli), key=lambda entry: entry[0]):
+        lines.append(f"  {event}:")
+        for _, matcher, cmd in group:
+            if matcher is None:
+                lines.append(f"    - command: {json.dumps(cmd)}")
+            else:
+                lines.append(f'    - matcher: "{matcher}"')
+                lines.append(f"      command: {json.dumps(cmd)}")
+    return "\n".join(lines) + "\n"
 
 
 def _mcp_registered(home: Path) -> bool:
@@ -125,7 +130,7 @@ def _ensure_hooks(home: Path, hermes_cli: str, myteam_cli: str) -> None:
 def _merge_hooks_text(cfg_path: Path, myteam_cli: str) -> None:
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     text = cfg_path.read_text(encoding="utf-8") if cfg_path.exists() else ""
-    if _hooks_registered(text):
+    if _hooks_registered(text, myteam_cli):
         print("Hermes hooks for my-team already registered")
         return
     if re.search(r"^hooks\s*:", text, re.MULTILINE):

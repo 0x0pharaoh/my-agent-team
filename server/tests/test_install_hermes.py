@@ -241,6 +241,12 @@ class TestInstallHermes:
         assert _read_config_text(home) == before
         assert "\nhooks:\n" not in capsys.readouterr().out
 
+    def test_hooks_registered_detects_stale_cli(self) -> None:
+        old = hermes_installer._hooks_text_block("/old/cli")
+        assert not hermes_installer._hooks_registered(old, "/new/cli")
+        new = hermes_installer._hooks_text_block("/new/cli")
+        assert hermes_installer._hooks_registered(new, "/new/cli")
+
     def test_real_localappdata_hermes_config_mtime_unchanged(self, tmp_path: Path) -> None:
         """The real %LOCALAPPDATA%/hermes/config.yaml mtime is unchanged after install."""
         real_home = Path(os.environ.get("LOCALAPPDATA", "")) / "hermes"
