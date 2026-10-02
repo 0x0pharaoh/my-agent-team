@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- WebAuthn passkeys: add/remove in Settings, log in with a security key; passphrase still works.
+
 ## 0.1.0
 
 - Daemon (loopback, HMAC-signed agents, passphrase login, CSP), tickets with claim fencing and human-only

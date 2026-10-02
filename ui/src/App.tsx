@@ -109,6 +109,106 @@ const primary = `${button} bg-primary text-bg hover:bg-primary-hover`;
 const secondary = `${button} border border-border hover:bg-surface-raised`;
 const field = "w-full rounded-sm border border-border bg-bg px-2 py-1.5 text-sm";
 
+function b64ToBytes(s: string): Uint8Array {
+  const bin = atob(s.replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+}
+
+function bytesToB64(bytes: ArrayBuffer): string {
+  const bin = String.fromCharCode(...new Uint8Array(bytes));
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+type DescriptorJSON = { type: string; id: string; transports?: string[] };
+type CredentialOptionsJSON = {
+  challenge: string; user?: { id: string; name: string; displayName: string };
+  excludeCredentials?: DescriptorJSON[]; allowCredentials?: DescriptorJSON[];
+};
+
+function toDescriptor(d: DescriptorJSON): PublicKeyCredentialDescriptor {
+  return { type: d.type as PublicKeyCredentialType, id: b64ToBytes(d.id).buffer as ArrayBuffer,
+           transports: d.transports as AuthenticatorTransport[] | undefined };
+}
+
+function toRequestOptions(options: CredentialOptionsJSON): PublicKeyCredentialRequestOptions {
+  return {
+    challenge: b64ToBytes(options.challenge).buffer as ArrayBuffer,
+    allowCredentials: (options.allowCredentials ?? []).map(toDescriptor),
+  };
+}
+
+function toCreationOptions(options: CredentialOptionsJSON): PublicKeyCredentialCreationOptions {
+  const user = options.user ?? { id: "", name: "", displayName: "" };
+  const params = options as unknown as { rp: object; pubKeyCredParams: object };
+  return {
+    rp: params.rp,
+    challenge: b64ToBytes(options.challenge).buffer as ArrayBuffer,
+    user: { ...user, id: b64ToBytes(user.id).buffer as ArrayBuffer },
+    excludeCredentials: (options.excludeCredentials ?? []).map(toDescriptor),
+    pubKeyCredParams: params.pubKeyCredParams,
+  } as PublicKeyCredentialCreationOptions;
+}
+
+function credentialToJSON(credential: Credential): object {
+  const rawId = (credential as PublicKeyCredential).rawId;
+  const response = credential as AuthenticatableResponse;
+  const result: Record<string, string> = { clientDataJSON: bytesToB64(response.clientDataJSON) };
+  const attestation = response.attestationObject;
+  if (attestation) result.attestationObject = bytesToB64(attestation);
+  const authData = response.authenticatorData;
+  if (authData) result.authenticatorData = bytesToB64(authData);
+  const signature = response.signature;
+  if (signature) result.signature = bytesToB64(signature);
+  const userHandle = response.userHandle;
+  if (userHandle) result.userHandle = bytesToB64(userHandle);
+  return { id: credential.id, rawId: bytesToB64(rawId), type: credential.type, response: result };
+}
+
+type AuthenticatableResponse = Credential & {
+  clientDataJSON: ArrayBuffer; attestationObject?: ArrayBuffer; authenticatorData?: ArrayBuffer;
+  signature?: ArrayBuffer; userHandle?: ArrayBuffer | null;
+};
+
+function Passkeys() {
+  const [keys, setKeys] = useState<{ id: string; name: string; created_ms: number }[]>([]);
+  const [error, setError] = useState("");
+  const load = useCallback(() => {
+    call<{ passkeys: { id: string; name: string; created_ms: number }[] }>("/auth/passkey/list", {})
+      .then((r) => setKeys(r.data.passkeys), (exc) => setError(exc instanceof ApiError ? exc.message : "?"));
+  }, []);
+  useEffect(load, [load]);
+  async function add() {
+    setError("");
+    try {
+      const name = window.prompt("Name this security key:", "My key") ?? "My key";
+      const { data } = await call<{ options: CredentialOptionsJSON }>("/auth/passkey/register/options", {});
+      const credential = await navigator.credentials.create({ publicKey: toCreationOptions(data.options) });
+      if (!credential) throw new Error("No credential returned.");
+      await call("/auth/passkey/register/finish", { credential: credentialToJSON(credential), name });
+      load();
+    } catch (exc) {
+      setError(exc instanceof ApiError ? exc.message : "Could not add the key.");
+    }
+  }
+  return (
+    <section aria-label="Passkeys" className="mt-6">
+      <h2 className="mb-2 font-semibold">Security keys</h2>
+      {error && <p role="alert" className="mb-2 text-sm text-danger">{error}</p>}
+      {keys.length === 0 && <p className="text-sm text-muted">No security keys yet.</p>}
+      <ul className="mb-2 space-y-1 text-sm">
+        {keys.map((key) => (
+          <li key={key.id} className="flex items-center gap-2">
+            <span>{key.name || "Unnamed key"}</span>
+            <button className={`${secondary} text-xs`} onClick={() =>
+              call("/auth/passkey/remove", { id: key.id }).then(load)}>Remove</button>
+          </li>
+        ))}
+      </ul>
+      <button className={secondary} onClick={add}>Add a security key</button>
+    </section>
+  );
+}
+
 function Login({ setupRequired, onDone }: { setupRequired: boolean; onDone: () => void }) {
   const [passphrase, setPassphrase] = useState("");
   const [error, setError] = useState("");
@@ -119,6 +219,18 @@ function Login({ setupRequired, onDone }: { setupRequired: boolean; onDone: () =
       onDone();
     } catch (exc) {
       setError(exc instanceof ApiError ? exc.message : "Login failed.");
+    }
+  }
+  async function usePasskey() {
+    setError("");
+    try {
+      const { data } = await call<{ options: CredentialOptionsJSON }>("/auth/passkey/login/options", {});
+      const credential = await navigator.credentials.get({ publicKey: toRequestOptions(data.options) });
+      if (!credential) throw new Error("No credential returned.");
+      await call("/auth/passkey/login/finish", { credential: credentialToJSON(credential) });
+      onDone();
+    } catch (exc) {
+      setError(exc instanceof ApiError ? exc.message : "Passkey login failed.");
     }
   }
   return (
@@ -137,6 +249,7 @@ function Login({ setupRequired, onDone }: { setupRequired: boolean; onDone: () =
           </label>
           {error && <p id="login-error" className="text-sm text-danger">{error}</p>}
           <button type="submit" className={primary}>Log in</button>
+          <button type="button" className={`${secondary} ml-2`} onClick={usePasskey}>Use a security key</button>
         </form>
       )}
     </main>
@@ -508,8 +621,7 @@ function SettingsView({ project, tick }: { project: string; tick: number }) {
   const [matrix, setMatrix] = useState<Matrix | null>(null);
   useEffect(() => {
     op<Matrix>(project, "activation_matrix").then((r) => setMatrix(r.data));
-  }, [project, tick]);
-  if (!matrix) return <p className="text-muted">Loading activation matrix…</p>;
+  }, [project, tick]);  if (!matrix) return <p className="text-muted">Loading activation matrix…</p>;
   return (
     <section aria-label="Activation">
       <h2 className="mb-2 font-semibold">Activation enforcement by scope and agent</h2>
@@ -525,6 +637,7 @@ function SettingsView({ project, tick }: { project: string; tick: number }) {
           ))}
         </tbody>
       </table>
+      <Passkeys />
     </section>
   );
 }

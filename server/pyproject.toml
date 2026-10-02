@@ -12,6 +12,7 @@ dependencies = [
     "platformdirs==4.11.12",
     "pydantic==2.13.5",
     "uvicorn==0.53.0",
+    "webauthn==3.0.1",
 ]
 
 [project.scripts]
@@ -19,6 +20,8 @@ my-team = "my_team.cli:main"
 
 [dependency-groups]
 dev = [
+    "cbor2==6.1.5",
+    "cryptography==50.0.1",
     "hatchling==1.27.0",
     "httpx==0.28.1",
     "pytest==8.4.2",

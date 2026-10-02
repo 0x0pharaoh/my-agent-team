@@ -9,7 +9,8 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
-from my_team import __version__, auth
+from my_team import __version__, auth, passkeys
+from my_team.ids import new_id
 from my_team.actor import HUMAN, Actor, agent_actor
 from my_team.clock import now_ms
 from my_team.daemon.state import DaemonState, db_epoch
@@ -137,14 +138,17 @@ def create_app(state: DaemonState, static_dir: Path | None = None) -> FastAPI:
                 failures["until"] = now + min(2 ** (failures["count"] - 5) * 30_000, 15 * 60_000)
             raise Unauthorized("bad_passphrase", "Passphrase is incorrect.")
         failures.update(count=0, until=0.0)
+        response = envelope({"authenticated": True})
+        response.set_cookie(SESSION_COOKIE, await _mint_session(now), max_age=SESSION_TTL_MS // 1000,
+                            httponly=True, samesite="strict", path="/")
+        return response
+
+    async def _mint_session(now: int) -> str:
         token, digest = auth.new_session_token()
         await state.registry.write(lambda tx: tx.execute(
             "INSERT INTO human_sessions (token_hash, created_ms, expires_ms) VALUES (?, ?, ?)",
             (digest, now, now + SESSION_TTL_MS)))
-        response = envelope({"authenticated": True})
-        response.set_cookie(SESSION_COOKIE, token, max_age=SESSION_TTL_MS // 1000, httponly=True, samesite="strict",
-                            path="/")
-        return response
+        return token
 
     @app.post("/auth/logout")
     async def logout(request: Request):
@@ -156,6 +160,104 @@ def create_app(state: DaemonState, static_dir: Path | None = None) -> FastAPI:
         response = envelope({"authenticated": False})
         response.delete_cookie(SESSION_COOKIE, path="/")
         return response
+
+    challenges: dict[str, dict] = {}
+
+    def _take_challenge(body: dict, purpose: str, host: str) -> tuple[str, str]:
+        now = now_ms()
+        for stale in [key for key, entry in challenges.items() if entry["expires_ms"] <= now]:
+            del challenges[stale]
+        challenge = passkeys.challenge_of(body.get("credential", {}))
+        entry = challenges.pop(challenge, None)
+        if entry is None or entry["purpose"] != purpose:
+            raise Unauthorized("stale_challenge", "Restart the passkey ceremony and try again.")
+        return challenge, f"http://{host}"
+
+    @app.post("/auth/passkey/register/options")
+    async def passkey_register_options(request: Request):
+        if await authenticate(request, b"") != HUMAN:
+            raise Forbidden("human_only", "Adding a passkey needs a logged-in human.")
+        existing = await state.registry.read(
+            lambda tx: [passkeys.b64u_decode(row[0]) for row in
+                        tx.execute("SELECT credential_id FROM passkeys").fetchall()])
+        challenge, options = await asyncio.to_thread(passkeys.registration_challenge, existing)
+        challenges[passkeys.b64u_encode(challenge)] = {"purpose": "register",
+                                                       "expires_ms": now_ms() + passkeys.CHALLENGE_TTL_MS}
+        return envelope({"options": options})
+
+    @app.post("/auth/passkey/register/finish")
+    async def passkey_register_finish(request: Request):
+        if await authenticate(request, b"") != HUMAN:
+            raise Forbidden("human_only", "Adding a passkey needs a logged-in human.")
+        body = parse_json(await request.body())
+        challenge, origin = _take_challenge(body, "register", request.headers.get("host", "localhost"))
+        verified = await asyncio.to_thread(passkeys.verify_registration, body.get("credential", {}),
+                                           passkeys.b64u_decode(challenge), origin)
+        await state.registry.write(lambda tx: tx.execute(
+            "INSERT INTO passkeys (id, credential_id, public_key, sign_count, name, created_ms)"
+            " VALUES (?, ?, ?, ?, ?, ?)", (new_id(), verified["credential_id"], verified["public_key"],
+                                           verified["sign_count"], str(body.get("name", ""))[:80], now_ms())))
+        return envelope({"ok": True})
+
+    @app.post("/auth/passkey/login/options")
+    async def passkey_login_options(request: Request):
+        existing = await state.registry.read(
+            lambda tx: [passkeys.b64u_decode(row[0]) for row in
+                        tx.execute("SELECT credential_id FROM passkeys").fetchall()])
+        if not existing:
+            raise NotFound("no_passkeys", "No passkey is registered yet.")
+        challenge, options = await asyncio.to_thread(passkeys.authentication_challenge, existing)
+        challenges[passkeys.b64u_encode(challenge)] = {"purpose": "login",
+                                                       "expires_ms": now_ms() + passkeys.CHALLENGE_TTL_MS}
+        return envelope({"options": options})
+
+    @app.post("/auth/passkey/login/finish")
+    async def passkey_login_finish(request: Request):
+        now = now_ms()
+        if now < failures["until"]:
+            raise Unauthorized("locked_out", "Too many attempts; wait and try again.",
+                               retry_ms=int(failures["until"] - now))
+        body = parse_json(await request.body())
+        try:
+            challenge, origin = _take_challenge(body, "login", request.headers.get("host", "localhost"))
+            credential_id = passkeys.credential_id_of(body.get("credential", {}))
+            row = await state.registry.read(lambda tx: tx.execute(
+                "SELECT public_key, sign_count FROM passkeys WHERE credential_id = ?",
+                (credential_id,)).fetchone())
+            if row is None:
+                raise Unauthorized("unknown_credential", "This passkey is not registered.")
+            sign_count = await asyncio.to_thread(
+                passkeys.verify_authentication, body.get("credential", {}), passkeys.b64u_decode(challenge),
+                origin, bytes(row[0]), row[1])
+            await state.registry.write(lambda tx: tx.execute(
+                "UPDATE passkeys SET sign_count = ? WHERE credential_id = ?", (sign_count, credential_id)))
+        except (Unauthorized, DomainError) as exc:
+            failures["count"] += 1
+            if failures["count"] >= 5:
+                failures["until"] = now + min(2 ** (failures["count"] - 5) * 30_000, 15 * 60_000)
+            raise exc if isinstance(exc, Unauthorized) else Unauthorized("bad_passkey", str(exc)) from exc
+        failures.update(count=0, until=0.0)
+        response = envelope({"authenticated": True})
+        response.set_cookie(SESSION_COOKIE, await _mint_session(now), max_age=SESSION_TTL_MS // 1000,
+                            httponly=True, samesite="strict", path="/")
+        return response
+
+    @app.get("/auth/passkey/list")
+    async def passkey_list(request: Request):
+        if await authenticate(request, b"") != HUMAN:
+            raise Forbidden("human_only", "Listing passkeys needs a logged-in human.")
+        rows = await state.registry.read(lambda tx: tx.all(
+            "SELECT id, name, created_ms FROM passkeys ORDER BY created_ms"))
+        return envelope({"passkeys": [{"id": row[0], "name": row[1], "created_ms": row[2]} for row in rows]})
+
+    @app.post("/auth/passkey/remove")
+    async def passkey_remove(request: Request):
+        if await authenticate(request, b"") != HUMAN:
+            raise Forbidden("human_only", "Removing a passkey needs a logged-in human.")
+        body = parse_json(await request.body())
+        await state.registry.write(lambda tx: tx.execute("DELETE FROM passkeys WHERE id = ?",
+                                                         (str(body.get("id", "")),)))
+        return envelope({"ok": True})
 
     @app.post("/api/v1/registry/{name}")
     async def registry_call(name: str, request: Request):
