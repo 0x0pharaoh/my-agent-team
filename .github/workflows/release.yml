@@ -25,6 +25,8 @@ jobs:
         working-directory: server
       # Wheel only: the sdist omits gitignored static/, so 0.1.0 ships the wheel.
       # --no-build-isolation keeps the ../README.md reference resolvable.
+      # Bare `uv build` is unsupported: hatch resolves the ../skills and ../adapters force-includes
+      # against the sdist tree, where those paths don't exist, so sdist-then-wheel can never pass.
       - run: test "${GITHUB_REF_NAME#v}" = "$(uv version --short)"
         working-directory: server
       - run: uv build --no-build-isolation --wheel
