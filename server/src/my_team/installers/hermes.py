@@ -97,13 +97,10 @@ def _hooks_registered(text: str) -> bool:
 
 def _hooks_text_block(myteam_cli: str) -> str:
     """Hook commands as JSON strings: Hermes splits with shlex posix=False, so one quote layer survives."""
-    cmd_session = f'"{myteam_cli}" hook session-start --agent hermes'
     cmd_prompt = f'"{myteam_cli}" hook prompt --agent hermes'
     cmd_tool = f'"{myteam_cli}" hook tool --agent hermes'
     return (
         "hooks:\n"
-        f"  on_session_start:\n"
-        f"    - command: {json.dumps(cmd_session)}\n"
         f"  pre_llm_call:\n"
         f"    - command: {json.dumps(cmd_prompt)}\n"
         f"  pre_tool_call:\n"
@@ -184,7 +181,7 @@ def _build_plan(home: Path, hermes_cli: str, myteam_cli: str) -> list[str]:
         f"install skill to {_skill_dest(home)}",
         f"install kanban bridge plugin to {_plugin_dest(home)}",
         f"register MCP server ({hermes_cli} mcp add {HERMES_MCP_SERVER} ...)",
-        "append on_session_start + pre_llm_call + pre_tool_call hooks to config.yaml",
+        "append pre_llm_call + pre_tool_call hooks to config.yaml",
         "enable autostart in my-team config",
     ]
 

@@ -196,7 +196,6 @@ class TestInstallHermes:
         """Hook commands round-trip: command: {json.dumps(cmd)} parses back to the exact command."""
         home = tmp_path / "hermes-home"
         cli = str(venv_myteam_cli)
-        cmd_session = f'"{cli}" hook session-start --agent hermes'
         cmd_prompt = f'"{cli}" hook prompt --agent hermes'
         cmd_tool = f'"{cli}" hook tool --agent hermes'
         with (
@@ -210,7 +209,7 @@ class TestInstallHermes:
         for line in text.splitlines():
             if "command:" in line:
                 val = line.split("command:", 1)[1].strip()
-                assert json.loads(val) in (cmd_session, cmd_prompt, cmd_tool)
+                assert json.loads(val) in (cmd_prompt, cmd_tool)
 
     def test_ensure_mcp_passes_agent_type_env_before_args(
         self, tmp_path: Path, patched_env: dict, venv_myteam_cli: Path
