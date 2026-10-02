@@ -198,6 +198,7 @@ class TestInstallHermes:
         cli = str(venv_myteam_cli)
         cmd_session = f'"{cli}" hook session-start --agent hermes'
         cmd_prompt = f'"{cli}" hook prompt --agent hermes'
+        cmd_tool = f'"{cli}" hook tool --agent hermes'
         with (
             patch.dict(os.environ, patched_env, clear=False),
             patch.object(hermes_installer, "_hermes_cli", return_value="/no/such/hermes"),
@@ -205,10 +206,25 @@ class TestInstallHermes:
             hermes_installer._ensure_hooks(home, "/no/such/hermes", cli)
         text = _read_config_text(home)
         assert "--agent hermes" in text
+        assert 'matcher: "mcp__my_team__.*"' in text
         for line in text.splitlines():
             if "command:" in line:
                 val = line.split("command:", 1)[1].strip()
-                assert json.loads(val) in (cmd_session, cmd_prompt)
+                assert json.loads(val) in (cmd_session, cmd_prompt, cmd_tool)
+
+    def test_ensure_mcp_passes_agent_type_env_before_args(
+        self, tmp_path: Path, patched_env: dict, venv_myteam_cli: Path
+    ) -> None:
+        home = tmp_path / "hermes-home"
+        with (
+            patch.dict(os.environ, patched_env, clear=False),
+            patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            hermes_installer._ensure_mcp(home, "hermes", str(venv_myteam_cli))
+            argv = mock_run.call_args[0][0]
+            assert argv[-2:] == ["--args", "mcp"]
+            assert argv[argv.index("--env") + 1] == "MY_TEAM_AGENT_TYPE=hermes"
 
     def test_ensure_hooks_leaves_existing_hooks_block_alone(
         self, tmp_path: Path, patched_env: dict, venv_myteam_cli: Path

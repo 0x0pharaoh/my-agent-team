@@ -6,7 +6,7 @@ from my_team import activation
 from my_team.client import DaemonError, DaemonUnavailable, connect
 from my_team.context import NOT_INITIALIZED, hook_output, render_context, unavailable
 
-EVENTS = ("session-start", "prompt", "pre-edit")
+EVENTS = ("session-start", "prompt", "pre-edit", "tool")
 
 
 def output(agent: str, event: str, text: str | None) -> str:
@@ -70,6 +70,9 @@ def run(event: str, agent: str) -> int:
     payload = json.loads(sys.stdin.read() or "{}")
     if event == "pre-edit":
         text = pre_edit_text(agent, payload)
+    elif event == "tool":
+        session = payload.get("session_id")
+        text = json.dumps({"action": "modify", "args": {"session": session}}) if session else None
     else:
         text = output(agent, event, context_text(agent, event, payload))
     if text:

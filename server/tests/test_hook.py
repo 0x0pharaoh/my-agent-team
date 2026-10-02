@@ -1,4 +1,6 @@
+import io
 import json
+import sys
 
 import pytest
 
@@ -22,6 +24,15 @@ def test_inactive_directory_injects_nothing(tmp_path):
 
 def test_skill_ships_with_the_checkout():
     assert checkout() is not None and (skill_source() / "SKILL.md").is_file()
+
+
+def test_tool_event_rewrites_session_id(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"session_id": "s1"})))
+    assert hook.run("tool", "hermes") == 0
+    assert json.loads(capsys.readouterr().out) == {"action": "modify", "args": {"session": "s1"}}
+    monkeypatch.setattr(sys, "stdin", io.StringIO("{}"))
+    assert hook.run("tool", "hermes") == 0
+    assert capsys.readouterr().out == ""
 
 
 async def test_events_since_pages_the_log(agent, human):

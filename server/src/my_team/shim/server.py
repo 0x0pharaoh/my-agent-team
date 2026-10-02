@@ -83,7 +83,8 @@ class Shim:
     def identify(self, ctx) -> None:
         if self.agent_type is None:
             params = ctx.session.client_params
-            self.agent_type = agent_type_of(params.client_info.name if params else "")
+            self.agent_type = (os.environ.get("MY_TEAM_AGENT_TYPE")
+                               or agent_type_of(params.client_info.name if params else ""))
 
     def tools(self) -> list[types.Tool]:
         listed = [types.Tool(name=op.name, description=op.description, input_schema=op.input.model_json_schema(),
