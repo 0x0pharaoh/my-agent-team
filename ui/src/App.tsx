@@ -16,9 +16,14 @@ type Sprint = {
   review_summary: string | null; total: number; done: number;
 };
 type Session = { id: string; status: string; ticket: string | null; last_heartbeat_ms: number | null; last_activity_ms: number };
-type Agent = { id: string; display_name: string; agent_type: string; role: string | null; sessions: Session[] };
+type Agent = {
+  id: string; display_name: string; agent_type: string; role: string | null; lead_id: string | null; sessions: Session[];
+};
+type Settings = { auto_run: boolean; default_max_tokens: number; default_max_minutes: number; max_parallel_runs: number };
+type DetectedAgent = { agent_type: string; installed: boolean; path: string | null; version: string | null };
+const AGENT_TYPES = ["claude-code", "codex", "opencode", "hermes"];
 type Project = { id: string; name: string; key: string; roots: string[] };
-type Board = { tickets: Ticket[]; agents: Agent[]; sprints: Sprint[] };
+type Board = { tickets: Ticket[]; agents: Agent[]; sprints: Sprint[]; settings: Settings };
 type SetupStatus = {
   complete: boolean;
   checklist: {
@@ -282,9 +287,14 @@ function TicketCard({ ticket, agents, run, open }: {
       <div className="mt-2 flex gap-1">
         <select aria-label={`Assign ${ticket.key}`} className={`${field} text-xs`} value={ticket.assignee?.id ?? ""}
           disabled={ticket.status === "done" || ticket.status === "cancelled"}
-          onChange={(e) => run("ticket_assign", { key: ticket.key, agent_id: e.target.value || null, version: ticket.version })}>
+          onChange={(e) => run("ticket_assign", e.target.value.startsWith("type:")
+            ? { key: ticket.key, agent_type: e.target.value.slice(5), version: ticket.version }
+            : { key: ticket.key, agent_id: e.target.value || null, version: ticket.version })}>
           <option value="">Unassigned</option>
           {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.display_name}</option>)}
+          {AGENT_TYPES.filter((type) => !agents.some((agent) => agent.agent_type === type)).map((type) => (
+            <option key={type} value={`type:${type}`}>{type} (new seat)</option>
+          ))}
         </select>
         {ticket.human_actions.length > 0 && (
           <select aria-label={`Change status of ${ticket.key}`} className={`${field} text-xs`} value=""
@@ -617,6 +627,35 @@ const SESSION_TONE: Record<string, [string, ReactNode]> = {
   unknown: ["text-warning", <AlertTriangle size={12} />],
 };
 
+function AutomationSettings({ settings, run }: { settings: Settings; run: (name: string, body: object) => void }) {
+  const number = (key: keyof Settings, label: string, min: number, max: number) => (
+    <label className="flex items-center gap-2 text-sm">
+      {label}
+      <input type="number" min={min} max={max} className={`${field} w-32`} defaultValue={settings[key] as number}
+        onBlur={(e) => Number(e.target.value) !== settings[key] && run("settings_update", { [key]: Number(e.target.value) })} />
+    </label>
+  );
+  return (
+    <section aria-label="Automation" className="mb-6 space-y-2 rounded-lg bg-surface p-3">
+      <h2 className="font-semibold">Automation</h2>
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={settings.auto_run}
+          onChange={(e) => run("settings_update", { auto_run: e.target.checked })} />
+        Start agent runs automatically when a Ready ticket is assigned
+      </label>
+      <p className="text-xs text-muted">
+        Runs use your agents' own accounts and permissions. Only Codex runs inside a sandbox; OpenCode and Hermes
+        runs act with your user rights.
+      </p>
+      <div className="flex flex-wrap gap-4">
+        {number("default_max_tokens", "Default max tokens", 1000, 10_000_000)}
+        {number("default_max_minutes", "Default max minutes", 1, 1440)}
+        {number("max_parallel_runs", "Parallel runs", 1, 16)}
+      </div>
+    </section>
+  );
+}
+
 function SettingsView({ project, tick }: { project: string; tick: number }) {
   const [matrix, setMatrix] = useState<Matrix | null>(null);
   useEffect(() => {
@@ -642,14 +681,46 @@ function SettingsView({ project, tick }: { project: string; tick: number }) {
   );
 }
 
-function AgentsView({ agents, run }: { agents: Agent[]; run: (name: string, body: object) => void }) {
+function DetectedAgents({ project }: { project: string }) {
+  const [found, setFound] = useState<DetectedAgent[] | null>(null);
+  useEffect(() => {
+    op<{ agents: DetectedAgent[] }>(project, "agents_detect").then((r) => setFound(r.data.agents));
+  }, [project]);
+  return (
+    <section aria-label="Installed agents" className="mb-4">
+      <h2 className="mb-1 font-semibold">Installed agents</h2>
+      {!found && <p className="text-sm text-muted">Looking for agent CLIs…</p>}
+      <ul className="flex flex-wrap gap-2 text-sm">
+        {found?.map((a) => (
+          <li key={a.agent_type}>
+            <Chip tone={a.installed ? "text-success" : "text-muted"}
+              icon={a.installed ? <CheckCircle2 size={12} /> : <CircleDashed size={12} />}>
+              {a.agent_type} · {a.installed ? a.version ?? "installed" : "not found"}
+            </Chip>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function AgentsView({ project, agents, run }: {
+  project: string; agents: Agent[]; run: (name: string, body: object) => void;
+}) {
   const now = useNow();
   if (agents.length === 0) {
-    return <p className="text-muted">No agent has connected yet. Start Claude Code in the project and send a prompt.</p>;
+    return (
+      <>
+        <DetectedAgents project={project} />
+        <p className="text-muted">No seats yet. Assign a ticket to an installed agent, or start one in the project.</p>
+      </>
+    );
   }
   return (
+    <>
+    <DetectedAgents project={project} />
     <table className="w-full text-left text-sm">
-      <thead className="text-muted"><tr><th className="py-1">Seat</th><th>Type</th><th>Role</th><th>Sessions</th></tr></thead>
+      <thead className="text-muted"><tr><th className="py-1">Seat</th><th>Type</th><th>Role</th><th>Reports to</th><th>Sessions</th></tr></thead>
       <tbody>
         {agents.map((agent) => (
           <tr key={agent.id} className="border-t border-border align-top">
@@ -659,8 +730,22 @@ function AgentsView({ agents, run }: { agents: Agent[]; run: (name: string, body
             </td>
             <td className="py-2 font-mono text-xs">{agent.agent_type}</td>
             <td className="py-2">
-              <input aria-label={`Role of ${agent.display_name}`} className={`${field} max-w-48`} defaultValue={agent.role ?? ""}
-                onBlur={(e) => e.target.value !== (agent.role ?? "") && run("agent_update", { agent_id: agent.id, role: e.target.value })} />
+              <select aria-label={`Role of ${agent.display_name}`} className={`${field} max-w-36`} value={agent.role ?? ""}
+                onChange={(e) => run("agent_update", { agent_id: agent.id, role: e.target.value })}>
+                <option value="">No role</option>
+                <option value="lead">Lead</option>
+                <option value="worker">Worker</option>
+                <option value="reviewer">Reviewer</option>
+              </select>
+            </td>
+            <td className="py-2">
+              <select aria-label={`Lead of ${agent.display_name}`} className={`${field} max-w-40`} value={agent.lead_id ?? ""}
+                onChange={(e) => run("agent_update", { agent_id: agent.id, lead_id: e.target.value })}>
+                <option value="">Reports to you</option>
+                {agents.filter((other) => other.id !== agent.id).map((other) => (
+                  <option key={other.id} value={other.id}>{other.display_name}</option>
+                ))}
+              </select>
             </td>
             <td className="space-y-1 py-2">
               {agent.sessions.length === 0 && <span className="text-muted">No sessions in the last day</span>}
@@ -677,6 +762,7 @@ function AgentsView({ agents, run }: { agents: Agent[]; run: (name: string, body
         ))}
       </tbody>
     </table>
+    </>
   );
 }
 
@@ -947,8 +1033,13 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       {board && projectId && tab === "memory" && <MemoryView project={projectId} tick={tick} run={run} />}
       {board && projectId && tab === "docs" && <DocsView project={projectId} tick={tick} />}
       {board && projectId && tab === "repo" && <RepoView project={projectId} tick={tick} />}
-      {board && projectId && tab === "agents" && <AgentsView agents={board.agents} run={run} />}
-      {board && projectId && tab === "settings" && <SettingsView project={projectId} tick={tick} />}
+      {board && projectId && tab === "agents" && <AgentsView project={projectId} agents={board.agents} run={run} />}
+      {board && projectId && tab === "settings" && (
+        <>
+          <AutomationSettings key={JSON.stringify(board.settings)} settings={board.settings} run={run} />
+          <SettingsView project={projectId} tick={tick} />
+        </>
+      )}
     </div>
   );
 }

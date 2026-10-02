@@ -5,10 +5,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from my_team import auth
+from my_team import agent_clis, auth
 from my_team.actor import Actor
 from my_team.db.engine import Tx
-from my_team.domain import docs, events, guard, init, memory, messages, notices, projects, questions, repo, sessions, tickets
+from my_team.domain import docs, events, guard, init, memory, messages, notices, projects, questions, repo, sessions, settings, tickets
 from my_team.errors import Conflict
 
 Status = Literal["proposed", "backlog", "ready", "in_progress", "in_review", "blocked", "done", "cancelled"]
@@ -175,15 +175,20 @@ def ticket_transition(ctx: Ctx, inp: TicketTransitionIn) -> dict:
                                          version=inp.version, reason=inp.reason)}
 
 
+AgentType = Literal["claude-code", "codex", "opencode", "hermes"]
+
+
 class TicketAssignIn(Input):
     key: str
-    agent_id: str | None
+    agent_id: str | None = None
+    agent_type: AgentType | None = Field(None, description="Assign to this agent type's seat, created if needed.")
     version: int | None = None
 
 
-@op("ticket_assign", TicketAssignIn, HUMAN, "Assign or reassign a ticket to an agent seat.")
+@op("ticket_assign", TicketAssignIn, HUMAN, "Assign or reassign a ticket to an agent seat or agent type.")
 def ticket_assign(ctx: Ctx, inp: TicketAssignIn) -> dict:
-    return {"ticket": tickets.assign(ctx.tx, ctx.actor, inp.key, inp.agent_id, ctx.now, ctx.stall_cutoff,
+    agent_id = inp.agent_id or (sessions.ensure_seat(ctx.tx, inp.agent_type, ctx.now) if inp.agent_type else None)
+    return {"ticket": tickets.assign(ctx.tx, ctx.actor, inp.key, agent_id, ctx.now, ctx.stall_cutoff,
                                      version=inp.version)}
 
 
@@ -218,7 +223,25 @@ class EmptyIn(Input):
 @op("board", EmptyIn, HUMAN, "Snapshot of tickets and agent seats for the dashboard.", read_only=True)
 def board(ctx: Ctx, inp: EmptyIn) -> dict:
     return {"tickets": tickets.find(ctx.tx, ctx.stall_cutoff, limit=1000),
-            "agents": sessions.seats(ctx.tx, ctx.now, ctx.daemon_started_ms), "sprints": tickets.sprints(ctx.tx)}
+            "agents": sessions.seats(ctx.tx, ctx.now, ctx.daemon_started_ms), "settings": settings.get(ctx.tx),
+            "sprints": tickets.sprints(ctx.tx)}
+
+
+@op("agents_detect", EmptyIn, HUMAN, "Agent CLIs installed on this machine.", read_only=True, db=False)
+def agents_detect(ctx: Ctx, inp: EmptyIn) -> dict:
+    return {"agents": agent_clis.detect()}
+
+
+class SettingsIn(Input):
+    auto_run: bool | None = Field(None, description="Start agent runs automatically when a Ready ticket is assigned.")
+    default_max_tokens: int | None = Field(None, ge=1_000, le=10_000_000)
+    default_max_minutes: int | None = Field(None, ge=1, le=24 * 60)
+    max_parallel_runs: int | None = Field(None, ge=1, le=16)
+
+
+@op("settings_update", SettingsIn, HUMAN, "Change project automation settings.")
+def settings_update(ctx: Ctx, inp: SettingsIn) -> dict:
+    return {"settings": settings.update(ctx.tx, ctx.actor, ctx.now, inp.model_dump(exclude_none=True))}
 
 
 @op("repo_status", EmptyIn, HUMAN, "Local and remote state of the project's git repository.", read_only=True,
@@ -312,17 +335,20 @@ def sprint_transition(ctx: Ctx, inp: SprintTransitionIn) -> dict:
 class AgentUpdateIn(Input):
     agent_id: str
     display_name: str | None = Field(None, min_length=1, max_length=40)
-    role: str | None = Field(None, max_length=80)
+    role: Literal["lead", "worker", "reviewer", ""] | None = None
+    lead_id: str | None = Field(None, description='Seat this agent reports to; "" removes the lead.')
 
 
-@op("agent_update", AgentUpdateIn, HUMAN, "Rename an agent seat or set its role.")
+@op("agent_update", AgentUpdateIn, HUMAN, "Rename an agent seat, set its role, or set who it reports to.")
 def agent_update(ctx: Ctx, inp: AgentUpdateIn) -> dict:
     if inp.display_name:
         ctx.tx.execute("UPDATE agents SET display_name = ? WHERE id = ?", (inp.display_name, inp.agent_id))
     if inp.role is not None:
         ctx.tx.execute("UPDATE agents SET role = ? WHERE id = ?", (inp.role or None, inp.agent_id))
+    if inp.lead_id is not None:
+        sessions.set_lead(ctx.tx, inp.agent_id, inp.lead_id or None)
     events.emit(ctx.tx, "agent.updated", "agent", inp.agent_id, ctx.actor,
-                {"display_name": inp.display_name, "role": inp.role}, ctx.now)
+                {"display_name": inp.display_name, "role": inp.role, "lead_id": inp.lead_id}, ctx.now)
     return {"agents": sessions.seats(ctx.tx, ctx.now, ctx.daemon_started_ms)}
 
 

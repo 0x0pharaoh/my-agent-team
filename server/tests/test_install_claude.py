@@ -46,7 +46,7 @@ def _claude() -> str | None:
 
 def _run(cli: str, *args: str, env: dict) -> subprocess.CompletedProcess:
     return subprocess.run([cli, *args], env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                          timeout=240, check=False)
+                          encoding="utf-8", timeout=240, check=False)
 
 
 async def test_plugin_installs_from_marketplace_sandboxed(tmp_path, monkeypatch):
