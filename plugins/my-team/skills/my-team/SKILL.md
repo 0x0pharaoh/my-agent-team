@@ -79,7 +79,7 @@ invent requirements. Decide routine details yourself: naming, local structure, t
 ## Tickets
 
 1. Call `team_context` at session start.
-2. Before editing code for implementation work, `ticket_claim` a ready ticket with the `paths` you will touch. You hold at most one. Edits outside a claim, or inside another session's claimed paths, raise a permission prompt; widen `paths` via `ticket_update` instead of working around it.
+2. Before editing code for implementation work, `ticket_claim` a ready ticket with the `paths` you will touch. You hold at most one. Edits outside a claim, or inside another session's claimed paths, raise a permission prompt on Claude Code, OpenCode, and Hermes; on Codex there is no pre-edit guard, so follow the claim rule on trust. Widen `paths` via `ticket_update` instead of working around it.
 3. Record progress with `ticket_update` action `note`, passing the `epoch` from the claim.
 4. When done, `ticket_update` action `review` with a summary. Only the human closes tickets.
 5. To switch work, first `release` or `block` your ticket with a note saying where you stopped.
