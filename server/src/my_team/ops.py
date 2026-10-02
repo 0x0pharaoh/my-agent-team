@@ -246,6 +246,24 @@ def settings_update(ctx: Ctx, inp: SettingsIn) -> dict:
     return {"settings": settings.update(ctx.tx, ctx.actor, ctx.now, inp.model_dump(exclude_none=True))}
 
 
+class StepIn(Input):
+    name: str = Field(..., min_length=1, max_length=40)
+    agent_type: AgentType
+    max_tokens: int | None = Field(None, ge=1_000, le=10_000_000)
+    max_minutes: int | None = Field(None, ge=1, le=24 * 60)
+
+
+class WorkflowIn(Input):
+    key: str
+    steps: list[StepIn] = Field(default_factory=list, max_length=8)
+
+
+@op("ticket_workflow", WorkflowIn, HUMAN, "Set a ticket's step pipeline (e.g. plan -> implement -> review).")
+def ticket_workflow(ctx: Ctx, inp: WorkflowIn) -> dict:
+    steps = [step.model_dump(exclude_none=True) for step in inp.steps]
+    return {"ticket": runs.set_workflow(ctx.tx, ctx.actor, inp.key, steps, ctx.now, ctx.stall_cutoff)}
+
+
 class RunKeyIn(Input):
     key: str
 

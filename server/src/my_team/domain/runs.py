@@ -1,8 +1,9 @@
+import json
 import sqlite3
 
 from my_team.actor import SYSTEM, Actor
 from my_team.db.engine import Tx
-from my_team.domain import events, questions, settings, tickets
+from my_team.domain import events, questions, sessions, settings, tickets
 from my_team.errors import Conflict, Invalid, NotFound
 from my_team.ids import new_id
 
@@ -39,13 +40,16 @@ def listing(tx: Tx, key: str | None = None, active_only: bool = False, limit: in
 
 def _queue(tx: Tx, ticket, now: int, actor: Actor) -> dict:
     conf = settings.get(tx)
+    steps = json.loads(ticket["workflow"])
+    step = steps[ticket["step"]] if ticket["step"] < len(steps) else {}
     run_id = new_id()
     try:
-        tx.execute("INSERT INTO runs (id, ticket_id, agent_id, agent_type, status, branch, max_tokens, max_seconds,"
-                   " created_ms) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
-                   (run_id, ticket["id"], ticket["assignee_agent_id"], ticket["agent_type"], f"mt/{ticket['key']}",
-                    ticket["max_tokens"] or conf["default_max_tokens"],
-                    60 * (ticket["max_minutes"] or conf["default_max_minutes"]), now))
+        tx.execute("INSERT INTO runs (id, ticket_id, step_index, agent_id, agent_type, status, branch, max_tokens,"
+                   " max_seconds, created_ms) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
+                   (run_id, ticket["id"], ticket["step"], ticket["assignee_agent_id"], ticket["agent_type"],
+                    f"mt/{ticket['key']}",
+                    step.get("max_tokens") or ticket["max_tokens"] or conf["default_max_tokens"],
+                    60 * (step.get("max_minutes") or ticket["max_minutes"] or conf["default_max_minutes"]), now))
     except sqlite3.IntegrityError:
         raise Conflict("run_active", f"{ticket['key']} already has an active run.") from None
     events.emit(tx, "run.queued", "run", run_id, actor, {"ticket": ticket["key"], "agent_type": ticket["agent_type"]},
@@ -120,8 +124,48 @@ def finish(tx: Tx, run_id: str, now: int, status: str, *, summary: str | None = 
     elif status != "succeeded":
         tickets.block(tx, SYSTEM, key, f"run {status}: {(error or summary or '')[:200]}".rstrip(": "), now)
     else:
-        tickets.block(tx, SYSTEM, key, "run ended without moving the ticket to review", now)
+        ticket = tx.one("SELECT * FROM tickets WHERE key = ?", (key,))
+        steps = json.loads(ticket["workflow"])
+        if ticket["status"] == "in_review" and ticket["step"] + 1 < len(steps):
+            _next_step(tx, ticket, steps, summary, now)
+        else:
+            tickets.block(tx, SYSTEM, key, "run ended without moving the ticket to review", now)
     return get(tx, run_id)
+
+
+def _next_step(tx: Tx, ticket, steps: list[dict], summary: str | None, now: int) -> None:
+    """Pipeline handoff: the reviewed step's summary stays on the ticket and the next step's agent gets it Ready."""
+    step = ticket["step"] + 1
+    agent_id = sessions.ensure_seat(tx, steps[step]["agent_type"], now)
+    tx.execute("UPDATE tickets SET status = 'ready', step = ?, assignee_agent_id = ?, changes_requested = 0,"
+               " implementation_summary = COALESCE(implementation_summary, ?), version = version + 1, updated_ms = ?"
+               " WHERE id = ?", (step, agent_id, summary, now, ticket["id"]))
+    events.emit(tx, "ticket.transitioned", "ticket", ticket["id"], SYSTEM,
+                {"key": ticket["key"], "from": "in_review", "to": "ready", "action": "pipeline_next",
+                 "note": f"step {step + 1}/{len(steps)}: {steps[step]['name']}"}, now)
+    events.emit(tx, "ticket.assigned", "ticket", ticket["id"], SYSTEM, {"key": ticket["key"], "agent_id": agent_id}, now)
+
+
+def set_workflow(tx: Tx, actor: Actor, key: str, steps: list[dict], now: int, stall_cutoff: int) -> dict:
+    """Define a step pipeline; the first step's agent gets the ticket and later steps follow on review."""
+    tx.execute("UPDATE tickets SET workflow = ?, step = 0, version = version + 1, updated_ms = ? WHERE key = ?",
+               (json.dumps(steps), now, key))
+    if steps:
+        tickets.assign(tx, actor, key, sessions.ensure_seat(tx, steps[0]["agent_type"], now), now, stall_cutoff)
+    events.emit(tx, "ticket.edited", "ticket", tickets.get(tx, key, stall_cutoff)["id"], actor,
+                {"key": key, "fields": ["workflow"]}, now)
+    return tickets.get(tx, key, stall_cutoff)
+
+
+def resumable(tx: Tx, run_id: str) -> str | None:
+    """The agent session to continue: the same ticket's previous run, if it stopped only for its budget."""
+    run = tx.one("SELECT ticket_id, agent_type, step_index FROM runs WHERE id = ?", (run_id,))
+    prev = tx.one("SELECT native_session_id, status, agent_type, step_index FROM runs WHERE ticket_id = ? AND id <> ?"
+                  " ORDER BY created_ms DESC LIMIT 1", (run["ticket_id"], run_id))
+    if prev and prev["status"] == "budget_exhausted" and (prev["agent_type"], prev["step_index"]) == (
+            run["agent_type"], run["step_index"]):
+        return prev["native_session_id"]
+    return None
 
 
 def on_answer(tx: Tx, actor: Actor, question_id: str, answer: str, now: int, stall_cutoff: int) -> None:

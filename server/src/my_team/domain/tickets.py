@@ -82,6 +82,7 @@ def serialize(tx: Tx, row, stall_cutoff: int) -> dict:
         "status_reason": row["status_reason"], "implementation_summary": row["implementation_summary"],
         "origin_key": row["origin_key"], "version": row["version"], "paths": json.loads(row["paths"]),
         "sprint_id": row["sprint_id"], "max_tokens": row["max_tokens"], "max_minutes": row["max_minutes"],
+        "workflow": json.loads(row["workflow"]), "step": row["step"],
         "created_ms": row["created_ms"], "updated_ms": row["updated_ms"],
         "pending_pickup": row["status"] == "ready" and row["assignee_agent_id"] is not None,
         "stalled": stalled,

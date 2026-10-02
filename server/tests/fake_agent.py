@@ -1,5 +1,6 @@
 """Stand-in for a headless agent CLI: prints Claude-style stream-json so runner tests spend no real tokens."""
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -16,6 +17,8 @@ def assistant(n: int, tokens: int) -> dict:
 
 
 mode, marker = sys.argv[1], Path(sys.argv[2])
+marker.with_suffix(".env").write_text(json.dumps({k: os.environ.get(k) for k in (
+    "PWD", "MY_TEAM_AGENT", "MY_TEAM_AGENT_TYPE")} | {"cwd": os.getcwd()}))
 emit({"type": "system", "subtype": "init", "session_id": "fake-session"})
 if mode == "ok":
     emit(assistant(1, 150))

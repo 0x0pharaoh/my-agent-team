@@ -1,5 +1,7 @@
+import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -58,6 +60,13 @@ async def test_successful_run_leaves_the_ticket_in_review(state, human, agent, f
     runner.tick(state)
     run = (await human.op("runs_list", {"key": ticket["key"]}))["data"]["runs"][0]
     assert run["status"] == "running" and Path(run["worktree_path"]).is_dir() and run["branch"] == f"mt/{ticket['key']}"
+    for _ in range(100):
+        if fake.marker.with_suffix(".env").exists():
+            break
+        time.sleep(0.1)
+    env = json.loads(fake.marker.with_suffix(".env").read_text())
+    assert env["PWD"] == run["worktree_path"] and Path(env["cwd"]).samefile(run["worktree_path"])
+    assert (env["MY_TEAM_AGENT"], env["MY_TEAM_AGENT_TYPE"]) == ("claude-code", "claude-code")
     claim = (await agent.op("ticket_claim", {"key": ticket["key"]}))["data"]["ticket"]
     await agent.op("ticket_update", {"key": ticket["key"], "action": "review", "epoch": claim["claim_epoch"],
                                      "summary": "done"})

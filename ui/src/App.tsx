@@ -10,6 +10,7 @@ type Ticket = {
   acceptance_criteria: Criterion[]; pending_pickup: boolean; stalled: boolean; waiting_on: string[];
   changes_requested: boolean; status_reason: string | null; implementation_summary: string | null;
   human_actions: string[]; sprint_id: string | null; max_tokens: number | null; max_minutes: number | null;
+  workflow: Step[]; step: number;
 };
 type Sprint = {
   id: string; name: string; goal: string; status: string; start_ms: number | null; end_ms: number | null;
@@ -23,6 +24,7 @@ type Settings = { auto_run: boolean; default_max_tokens: number; default_max_min
 type DetectedAgent = { agent_type: string; installed: boolean; path: string | null; version: string | null };
 const AGENT_TYPES = ["claude-code", "codex", "opencode", "hermes"];
 type Project = { id: string; name: string; key: string; roots: string[] };
+type Step = { name: string; agent_type: string; max_tokens?: number; max_minutes?: number };
 type Run = {
   id: string; ticket: string | null; agent: string; agent_type: string; status: string; tokens: number;
   max_tokens: number; max_seconds: number; started_ms: number | null; ended_ms: number | null; created_ms: number;
@@ -384,6 +386,41 @@ function RunsPanel({ project, ticket, run }: {
   );
 }
 
+function WorkflowEditor({ ticket, run }: { ticket: Ticket; run: (name: string, body: object) => void }) {
+  const [steps, setSteps] = useState<Step[]>(ticket.workflow);
+  const change = (i: number, patch: Partial<Step>) => setSteps(steps.map((step, j) => (j === i ? { ...step, ...patch } : step)));
+  return (
+    <section aria-label="Workflow" className="mt-4 space-y-2">
+      <h3 className="font-medium">
+        Workflow {ticket.workflow.length > 0 && <span className="text-sm text-muted">· step {ticket.step + 1} of {ticket.workflow.length}</span>}
+      </h3>
+      {steps.length === 0 && <p className="text-xs text-muted">Single agent. Add steps (e.g. plan → implement → review) to hand the ticket from agent to agent.</p>}
+      <ol className="space-y-1">
+        {steps.map((step, i) => (
+          <li key={i} className="flex flex-wrap items-center gap-2">
+            <span className="w-5 text-xs text-muted">{i + 1}.</span>
+            <input aria-label={`Step ${i + 1} name`} className={`${field} max-w-40`} value={step.name}
+              onChange={(e) => change(i, { name: e.target.value })} />
+            <select aria-label={`Step ${i + 1} agent`} className={`${field} w-auto`} value={step.agent_type}
+              onChange={(e) => change(i, { agent_type: e.target.value })}>
+              {AGENT_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
+            </select>
+            <button className={secondary} aria-label={`Remove step ${i + 1}`} onClick={() => setSteps(steps.filter((_, j) => j !== i))}>Remove</button>
+          </li>
+        ))}
+      </ol>
+      <div className="flex gap-2">
+        <button className={secondary} disabled={steps.length >= 8}
+          onClick={() => setSteps([...steps, { name: ["plan", "implement", "review", "test"][steps.length] ?? "step", agent_type: "claude-code" }])}>
+          Add step
+        </button>
+        <button className={secondary} disabled={steps.some((step) => !step.name.trim())}
+          onClick={() => run("ticket_workflow", { key: ticket.key, steps })}>Save workflow</button>
+      </div>
+    </section>
+  );
+}
+
 function TicketDialog({ project, ticket, onClose, run }: {
   project: string; ticket: Ticket; onClose: () => void; run: (name: string, body: object) => void;
 }) {
@@ -418,6 +455,7 @@ function TicketDialog({ project, ticket, onClose, run }: {
         key: ticket.key, version: ticket.version,
         acceptance_criteria: criteria.split("\n").map((text) => text.trim()).filter(Boolean),
       })}>Save criteria</button>
+      <WorkflowEditor key={JSON.stringify(ticket.workflow)} ticket={ticket} run={run} />
       <RunsPanel project={project} ticket={ticket} run={run} />
       <h3 className="mt-4 font-medium">History</h3>
       <ol className="mt-1 max-h-48 space-y-1 overflow-y-auto text-xs text-muted">
