@@ -27,6 +27,13 @@ def test_plugin_source_is_small_and_symlink_free():
     assert sum(p.stat().st_size for p in files) < 1_000_000
 
 
+def test_pre_tool_use_covers_notebook_edits():
+    entries = json.loads((_source() / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]["PreToolUse"]
+    notebook = next(entry["hooks"][0] for entry in entries if entry.get("matcher") == "NotebookEdit")
+    assert notebook["tool"] == "hook_pre_edit"
+    assert notebook["input"]["file_path"] == "${tool_input.notebook_path}"
+
+
 def _claude() -> str | None:
     return shutil.which("claude")
 

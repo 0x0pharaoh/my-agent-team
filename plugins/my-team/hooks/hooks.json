@@ -60,6 +60,21 @@
             }
           }
         ]
+      },
+      {
+        "matcher": "NotebookEdit",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "plugin:my-team:my-team",
+            "tool": "hook_pre_edit",
+            "input": {
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "file_path": "${tool_input.notebook_path}"
+            }
+          }
+        ]
       }
     ]
   }
