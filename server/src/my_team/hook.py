@@ -30,7 +30,8 @@ def _session(agent: str, native: str | None, cwd: str):
     if not project:
         return resolved, client, None, None
     session = client.project(project["id"], "session_register",
-                             {"agent_type": agent, "native_id": native, "root_path": cwd, "via": "hook"})
+                             {"agent_type": agent, "native_id": native, "root_path": cwd, "via": "hook",
+                              "agent_name": os.environ.get("MY_TEAM_AGENT") or None})
     return resolved, client, project, session
 
 

@@ -39,7 +39,11 @@ it a security-sensitive component even though it never leaves the machine.
 - **Least privilege.**
   - Agents get the narrowest operation set that lets them work.
   - Every human-only operation rejects agent credentials in exactly one place, the operation table.
-  - The daemon has no command-execution endpoint.
+  - The daemon has no command-execution endpoint. Its runner starts only the four known agent CLIs (resolved by
+    absolute path, argv built in code) and `git`, for tickets the human assigned while auto-run is on or after an
+    explicit Run. Budgets are enforced by killing the process tree, not trusted to the agent. Codex runs inside
+    its `workspace-write` sandbox; Claude Code uses `acceptEdits` (no shell without its own allowlist); worktrees
+    isolate edits but are not a sandbox.
 - **No credential in a URL, a log, or a repository.** Secrets travel only in request bodies or signatures.
 - **Untrusted by default.** Repository content, git configuration, agent messages, and agent-written memories are
   data. They are never instructions.

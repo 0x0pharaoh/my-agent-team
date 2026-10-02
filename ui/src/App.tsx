@@ -9,7 +9,7 @@ type Ticket = {
   holder: { session_id: string; name: string; last_heartbeat_ms: number | null } | null;
   acceptance_criteria: Criterion[]; pending_pickup: boolean; stalled: boolean; waiting_on: string[];
   changes_requested: boolean; status_reason: string | null; implementation_summary: string | null;
-  human_actions: string[]; sprint_id: string | null;
+  human_actions: string[]; sprint_id: string | null; max_tokens: number | null; max_minutes: number | null;
 };
 type Sprint = {
   id: string; name: string; goal: string; status: string; start_ms: number | null; end_ms: number | null;
@@ -23,7 +23,17 @@ type Settings = { auto_run: boolean; default_max_tokens: number; default_max_min
 type DetectedAgent = { agent_type: string; installed: boolean; path: string | null; version: string | null };
 const AGENT_TYPES = ["claude-code", "codex", "opencode", "hermes"];
 type Project = { id: string; name: string; key: string; roots: string[] };
-type Board = { tickets: Ticket[]; agents: Agent[]; sprints: Sprint[]; settings: Settings };
+type Run = {
+  id: string; ticket: string | null; agent: string; agent_type: string; status: string; tokens: number;
+  max_tokens: number; max_seconds: number; started_ms: number | null; ended_ms: number | null; created_ms: number;
+  summary: string | null; error: string | null; worktree_path: string | null; branch: string | null;
+};
+type Board = { tickets: Ticket[]; agents: Agent[]; sprints: Sprint[]; settings: Settings; runs: Run[] };
+const RUN_ACTIVE = ["queued", "running"];
+
+function thousands(n: number) {
+  return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+}
 type SetupStatus = {
   complete: boolean;
   checklist: {
@@ -261,10 +271,11 @@ function Login({ setupRequired, onDone }: { setupRequired: boolean; onDone: () =
   );
 }
 
-function TicketCard({ ticket, agents, run, open }: {
-  ticket: Ticket; agents: Agent[]; run: (name: string, body: object) => void; open: () => void;
+function TicketCard({ ticket, agents, runs, run, open }: {
+  ticket: Ticket; agents: Agent[]; runs: Run[]; run: (name: string, body: object) => void; open: () => void;
 }) {
   const now = useNow();
+  const active = runs.find((r) => r.ticket === ticket.key);
   return (
     <li className="rounded-md border border-border bg-surface-raised p-2 shadow-card">
       <button className="block w-full text-left" onClick={open}>
@@ -276,6 +287,11 @@ function TicketCard({ ticket, agents, run, open }: {
         {ticket.holder && (
           <Chip tone="text-primary" icon={<Radio size={12} />}>
             {ticket.holder.name} · {ago(ticket.holder.last_heartbeat_ms, now)}
+          </Chip>
+        )}
+        {active && (
+          <Chip tone="text-primary" icon={<Radio size={12} />}>
+            {active.status === "queued" ? "Run queued" : `Running · ${thousands(active.tokens)}/${thousands(active.max_tokens)} tokens`}
           </Chip>
         )}
         {ticket.stalled && <Chip tone="text-danger" icon={<AlertTriangle size={12} />}>Stalled</Chip>}
@@ -309,6 +325,64 @@ function TicketCard({ ticket, agents, run, open }: {
 }
 
 type HistoryEvent = { id: number; type: string; actor_type: string; created_ms: number; payload: Record<string, unknown> };
+
+function RunsPanel({ project, ticket, run }: {
+  project: string; ticket: Ticket; run: (name: string, body: object) => void;
+}) {
+  const [runs, setRuns] = useState<Run[]>([]);
+  const [log, setLog] = useState({ text: "", offset: 0, id: "" });
+  const now = useNow(2000);
+  const active = runs.find((r) => RUN_ACTIVE.includes(r.status));
+  const latest = runs[0];
+  useEffect(() => {
+    op<{ runs: Run[] }>(project, "runs_list", { key: ticket.key }).then((r) => setRuns(r.data.runs));
+  }, [project, ticket.key, ticket.version, active ? now : 0]);
+  useEffect(() => {
+    if (!latest) return;
+    const from = log.id === latest.id ? log.offset : 0;
+    op<{ text: string; offset: number }>(project, "run_log", { run_id: latest.id, offset: from }).then((r) =>
+      setLog((prev) => ({ id: latest.id, offset: r.data.offset, text: ((prev.id === latest.id ? prev.text : "") + r.data.text).slice(-20_000) })));
+  }, [project, latest?.id, active ? now : 0]);
+  const budget = (key: "max_tokens" | "max_minutes", label: string, min: number, max: number) => (
+    <label className="flex items-center gap-2 text-sm">
+      {label}
+      <input type="number" min={min} max={max} placeholder="project default" className={`${field} w-36`}
+        defaultValue={ticket[key] ?? ""}
+        onBlur={(e) => e.target.value && Number(e.target.value) !== ticket[key]
+          && run("ticket_edit", { key: ticket.key, version: ticket.version, [key]: Number(e.target.value) })} />
+    </label>
+  );
+  return (
+    <section aria-label="Agent runs" className="mt-4 space-y-2">
+      <header className="flex flex-wrap items-center gap-2">
+        <h3 className="font-medium">Agent runs</h3>
+        {!active && ticket.status === "ready" && ticket.assignee && (
+          <button className={secondary} onClick={() => run("run_start", { key: ticket.key })}>Run now</button>
+        )}
+        {active && <button className={secondary} onClick={() => run("run_stop", { run_id: active.id })}>Stop run</button>}
+      </header>
+      <div className="flex flex-wrap gap-4">
+        {budget("max_tokens", "Max tokens", 1000, 10_000_000)}
+        {budget("max_minutes", "Max minutes", 1, 1440)}
+      </div>
+      <ul className="space-y-1 text-sm">
+        {runs.map((r) => (
+          <li key={r.id}>
+            <span className="font-mono text-xs">{r.status}</span> · {r.agent} · {thousands(r.tokens)}/{thousands(r.max_tokens)} tokens
+            · {r.started_ms ? `${Math.round(((r.ended_ms ?? now) - r.started_ms) / 60_000)}/${r.max_seconds / 60} min` : "not started"}
+            {r.error && <span className="text-danger"> — {r.error}</span>}
+          </li>
+        ))}
+      </ul>
+      {runs.length === 0 && <p className="text-xs text-muted">No runs yet. Assign an agent; with auto-run on, Ready tickets start by themselves.</p>}
+      {latest && log.text && (
+        <pre aria-label="Run log" className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md bg-bg p-2 font-mono text-xs">
+          {log.text}
+        </pre>
+      )}
+    </section>
+  );
+}
 
 function TicketDialog({ project, ticket, onClose, run }: {
   project: string; ticket: Ticket; onClose: () => void; run: (name: string, body: object) => void;
@@ -344,6 +418,7 @@ function TicketDialog({ project, ticket, onClose, run }: {
         key: ticket.key, version: ticket.version,
         acceptance_criteria: criteria.split("\n").map((text) => text.trim()).filter(Boolean),
       })}>Save criteria</button>
+      <RunsPanel project={project} ticket={ticket} run={run} />
       <h3 className="mt-4 font-medium">History</h3>
       <ol className="mt-1 max-h-48 space-y-1 overflow-y-auto text-xs text-muted">
         {history.map((event) => (
@@ -395,7 +470,7 @@ function BoardView({ project, board, run }: { project: string; board: Board; run
               <h2 className="mb-2 text-sm font-semibold">{label} <span className="text-muted">{tickets.length}</span></h2>
               <ul className="space-y-2">
                 {tickets.map((ticket) => (
-                  <TicketCard key={ticket.id} ticket={ticket} agents={board.agents} run={run} open={() => setOpenKey(ticket.key)} />
+                  <TicketCard key={ticket.id} ticket={ticket} agents={board.agents} runs={board.runs} run={run} open={() => setOpenKey(ticket.key)} />
                 ))}
               </ul>
               {tickets.length === 0 && <p className="px-1 text-xs text-muted">Nothing here.</p>}

@@ -9,7 +9,7 @@ import sys
 import uvicorn
 from filelock import FileLock, Timeout
 
-from my_team import __version__
+from my_team import __version__, runner
 from my_team.clock import now_ms
 from my_team.config import port as configured_port
 from my_team.daemon.app import API_VERSION, create_app
@@ -88,10 +88,13 @@ async def _watch_idle(server: uvicorn.Server, state: DaemonState) -> None:
 async def _serve(server: uvicorn.Server, state: DaemonState, sockets: list[socket.socket]) -> None:
     state.broadcaster.loop = asyncio.get_running_loop()
     watcher = asyncio.create_task(_watch_idle(server, state))
+    scheduler = asyncio.create_task(runner.loop(state))
     try:
         await server.serve(sockets=sockets)
     finally:
         watcher.cancel()
+        scheduler.cancel()
+        runner.shutdown()
 
 
 def run(port: int | None = None) -> int:

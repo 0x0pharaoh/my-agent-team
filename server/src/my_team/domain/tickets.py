@@ -81,7 +81,7 @@ def serialize(tx: Tx, row, stall_cutoff: int) -> dict:
         "changes_requested": bool(row["changes_requested"]),
         "status_reason": row["status_reason"], "implementation_summary": row["implementation_summary"],
         "origin_key": row["origin_key"], "version": row["version"], "paths": json.loads(row["paths"]),
-        "sprint_id": row["sprint_id"],
+        "sprint_id": row["sprint_id"], "max_tokens": row["max_tokens"], "max_minutes": row["max_minutes"],
         "created_ms": row["created_ms"], "updated_ms": row["updated_ms"],
         "pending_pickup": row["status"] == "ready" and row["assignee_agent_id"] is not None,
         "stalled": stalled,
@@ -269,6 +269,21 @@ def transition(tx: Tx, actor: Actor, key: str, action: str, now: int, stall_cuto
     return get(tx, key, stall_cutoff)
 
 
+def block(tx: Tx, actor: Actor, key: str, reason: str, now: int) -> None:
+    """System stop after a run (budget, failure, human stop): any open ticket goes to blocked, holder revoked."""
+    row = _row(tx, key)
+    if row["status"] in (*CLOSED, "blocked", "in_review"):
+        return
+    _revoke(tx, row, actor, reason, now)
+    tx.execute(
+        "UPDATE tickets SET status = 'blocked', active_session_id = NULL,"
+        " revoked_session_id = COALESCE(active_session_id, revoked_session_id),"
+        " claim_epoch = claim_epoch + (active_session_id IS NOT NULL), status_reason = ?,"
+        " version = version + 1, updated_ms = ? WHERE id = ?", (reason, now, row["id"]))
+    events.emit(tx, "ticket.transitioned", "ticket", row["id"], actor,
+                {"key": key, "from": row["status"], "to": "blocked", "action": "system_block", "note": reason}, now)
+
+
 def assign(tx: Tx, actor: Actor, key: str, agent_id: str | None, now: int, stall_cutoff: int,
            version: int | None = None) -> dict:
     row = _row(tx, key)
@@ -298,7 +313,7 @@ def assign(tx: Tx, actor: Actor, key: str, agent_id: str | None, now: int, stall
     return get(tx, key, stall_cutoff)
 
 
-EDITABLE = ("title", "description", "priority", "type", "acceptance_criteria")
+EDITABLE = ("title", "description", "priority", "type", "acceptance_criteria", "max_tokens", "max_minutes")
 
 
 def edit(tx: Tx, actor: Actor, key: str, changes: dict, now: int, stall_cutoff: int, version: int | None = None) -> dict:

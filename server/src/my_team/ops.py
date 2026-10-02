@@ -5,10 +5,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from my_team import agent_clis, auth
+from my_team import agent_clis, auth, runner
 from my_team.actor import Actor
 from my_team.db.engine import Tx
-from my_team.domain import docs, events, guard, init, memory, messages, notices, projects, questions, repo, sessions, settings, tickets
+from my_team.domain import docs, events, guard, init, memory, messages, notices, projects, questions, repo, runs, sessions, settings, tickets
 from my_team.errors import Conflict
 
 Status = Literal["proposed", "backlog", "ready", "in_progress", "in_review", "blocked", "done", "cancelled"]
@@ -201,6 +201,8 @@ class TicketEditIn(Input):
     type: Literal["feature", "bug", "chore", "docs", "spike"] | None = None
     acceptance_criteria: list[dict | str] | None = None
     sprint_id: str | None = Field(None, description='Sprint to move the ticket into; "" moves it to the backlog.')
+    max_tokens: int | None = Field(None, ge=1_000, le=10_000_000, description="Token budget for agent runs.")
+    max_minutes: int | None = Field(None, ge=1, le=24 * 60, description="Time budget for agent runs.")
 
 
 @op("ticket_edit", TicketEditIn, HUMAN, "Edit ticket fields.")
@@ -224,7 +226,7 @@ class EmptyIn(Input):
 def board(ctx: Ctx, inp: EmptyIn) -> dict:
     return {"tickets": tickets.find(ctx.tx, ctx.stall_cutoff, limit=1000),
             "agents": sessions.seats(ctx.tx, ctx.now, ctx.daemon_started_ms), "settings": settings.get(ctx.tx),
-            "sprints": tickets.sprints(ctx.tx)}
+            "sprints": tickets.sprints(ctx.tx), "runs": runs.listing(ctx.tx, active_only=True)}
 
 
 @op("agents_detect", EmptyIn, HUMAN, "Agent CLIs installed on this machine.", read_only=True, db=False)
@@ -242,6 +244,44 @@ class SettingsIn(Input):
 @op("settings_update", SettingsIn, HUMAN, "Change project automation settings.")
 def settings_update(ctx: Ctx, inp: SettingsIn) -> dict:
     return {"settings": settings.update(ctx.tx, ctx.actor, ctx.now, inp.model_dump(exclude_none=True))}
+
+
+class RunKeyIn(Input):
+    key: str
+
+
+@op("run_start", RunKeyIn, HUMAN, "Start an agent run for a Ready, assigned ticket now.")
+def run_start(ctx: Ctx, inp: RunKeyIn) -> dict:
+    return {"run": runs.start(ctx.tx, ctx.actor, inp.key, ctx.now)}
+
+
+class RunIdIn(Input):
+    run_id: str = Field(..., pattern=r"^[0-9A-HJKMNP-TV-Z]{26}$")
+
+
+@op("run_stop", RunIdIn, HUMAN, "Stop an agent run; its ticket is blocked for your review.")
+def run_stop(ctx: Ctx, inp: RunIdIn) -> dict:
+    if not runner.stop(inp.run_id):
+        runs.finish(ctx.tx, inp.run_id, ctx.now, "stopped", error="stopped by the human")
+    return {"run": runs.get(ctx.tx, inp.run_id)}
+
+
+class RunsListIn(Input):
+    key: str | None = None
+
+
+@op("runs_list", RunsListIn, HUMAN, "Agent runs, newest first, optionally for one ticket.", read_only=True)
+def runs_list(ctx: Ctx, inp: RunsListIn) -> dict:
+    return {"runs": runs.listing(ctx.tx, inp.key)}
+
+
+class RunLogIn(RunIdIn):
+    offset: int = Field(0, ge=0)
+
+
+@op("run_log", RunLogIn, HUMAN, "Raw output of an agent run from an offset.", read_only=True, db=False)
+def run_log(ctx: Ctx, inp: RunLogIn) -> dict:
+    return runner.read_log(inp.run_id, inp.offset)
 
 
 @op("repo_status", EmptyIn, HUMAN, "Local and remote state of the project's git repository.", read_only=True,
@@ -488,7 +528,9 @@ class QuestionAnswerIn(Input):
 
 @op("question_answer", QuestionAnswerIn, HUMAN, "Answer or reject an agent's question.")
 def question_answer(ctx: Ctx, inp: QuestionAnswerIn) -> dict:
-    return {"question": questions.answer(ctx.tx, ctx.actor, ctx.now, inp.id, inp.answer, inp.reject)}
+    answered = questions.answer(ctx.tx, ctx.actor, ctx.now, inp.id, inp.answer, inp.reject)
+    runs.on_answer(ctx.tx, ctx.actor, inp.id, inp.answer, ctx.now, ctx.stall_cutoff)
+    return {"question": answered}
 
 
 class QuestionsListIn(Input):

@@ -9,8 +9,9 @@
 ## Overview
 
 my-team runs entirely on the developer's machine. The design rests on one division of responsibility: **the daemon
-holds state and the agents hold intelligence.** The daemon never calls a language model and never starts an agent
-process. Drafting documents, triaging audit findings, and judging duplication all happen inside agent sessions. The
+holds state and the agents hold intelligence.** The daemon never calls a language model itself. Since v0.3 it can
+start agent CLIs headlessly for ticket runs (see Agent runs below), but every judgement still happens inside the
+agent. Drafting documents, triaging audit findings, and judging duplication all happen inside agent sessions. The
 daemon provides:
 
 - deterministic storage
@@ -66,6 +67,21 @@ flowchart LR
 4. It calls `ticket_claim`. A single conditional UPDATE makes it the holder.
 5. The UI updates over SSE: "In progress · reported Ns ago".
 6. If no session picks the ticket up, the UI keeps showing "pending pickup". It never shows "working".
+
+### Agent runs (v0.3)
+When the project's **auto-run** setting is on (off by default) or the human presses **Run now**, the daemon's runner
+starts the assigned agent's CLI headlessly for a Ready ticket:
+1. `git worktree add <data>/worktrees/<project>/<KEY> -b mt/<KEY>` (refused if the repo's git config can run
+   commands); the worktree gets directory activation.
+2. The agent CLI runs with a brief built from the ticket (wrapped as data), `MY_TEAM_AGENT=<seat>` so its hooks and
+   MCP shim bind to the assigned seat, and a per-run MCP config for my-team. Claude Code:
+   `claude -p --output-format stream-json --session-id <uuid> --permission-mode acceptEdits`; Codex:
+   `codex exec --json -s workspace-write`.
+3. A pump thread writes raw output to `<data>/runs/<id>.log`, counts tokens (input + cache writes + output; cache
+   reads excluded), and emits `run.progress` every 5 s. Past the token or time budget the process tree is killed,
+   the ticket is blocked with `budget_exhausted`, and the human gets a decision: extend x2, reassign, or cancel.
+4. On exit the ticket must be in review; anything else (failure, human stop, no review) blocks it with the reason.
+The scheduler ticks every 2 s, respects `max_parallel_runs`, and fails runs a previous daemon left active.
 
 ## Technology Stack
 
