@@ -519,6 +519,7 @@ type Message = { id: string; channel: string; ticket: string | null; from: strin
   requires_response: boolean; created_ms: number; recipients: { to: string; read_ms: number | null }[] };
 type Memory = { id: string; kind: string; title: string; body: string; source: string; status: string;
   author: string; ticket: string | null; stale: string[]; created_ms: number };
+type Proposal = { id: string; doc: string; anchor: string; class: string; status: string; content: string };
 
 function QuestionCard({ question, run }: { question: Question; run: (name: string, body: object) => void }) {
   const [answer, setAnswer] = useState(question.recommendation ?? "");
@@ -550,12 +551,14 @@ function InboxView({ project, agents, tick, run }: {
   project: string; agents: Agent[]; tick: number; run: (name: string, body: object) => void;
 }) {
   const [questions, setQuestions] = useState<Question[]>([]);
+  const [proposals, setProposals] = useState<Proposal[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [to, setTo] = useState("all");
   const [body, setBody] = useState("");
   const now = useNow();
   useEffect(() => {
     op<{ questions: Question[] }>(project, "questions_list", { status: "open" }).then((r) => setQuestions(r.data.questions));
+    op<{ proposals: Proposal[] }>(project, "docs_proposals", { status: "pending" }).then((r) => setProposals(r.data.proposals));
     op<{ messages: Message[] }>(project, "messages_recent").then((r) => setMessages(r.data.messages));
   }, [project, tick]);
   function send(event: FormEvent) {
@@ -569,6 +572,24 @@ function InboxView({ project, agents, tick, run }: {
         <h2 className="mb-2 font-semibold">Questions waiting on you <span className="text-muted">{questions.length}</span></h2>
         {questions.length === 0 && <p className="text-sm text-muted">No open questions.</p>}
         <ul className="space-y-2">{questions.map((q) => <QuestionCard key={q.id} question={q} run={run} />)}</ul>
+      </section>
+      <section aria-label="Proposals">
+        <h2 className="mb-2 font-semibold">Doc proposals waiting on you <span className="text-muted">{proposals.length}</span></h2>
+        {proposals.length === 0 && <p className="text-sm text-muted">No pending proposals.</p>}
+        <ul className="space-y-2">
+          {proposals.map((proposal) => (
+            <li key={proposal.id} className="rounded-md border border-border bg-surface-raised p-3">
+              <p className="text-xs text-muted">{proposal.doc} › {proposal.anchor} · {proposal.class}</p>
+              <p className="my-1 whitespace-pre-wrap text-sm">{proposal.content.slice(0, 400)}</p>
+              <div className="flex gap-2">
+                <button className={primary}
+                  onClick={() => run("docs_decide", { id: proposal.id, approve: true })}>Approve</button>
+                <button className={secondary}
+                  onClick={() => run("docs_decide", { id: proposal.id, approve: false })}>Reject</button>
+              </div>
+            </li>
+          ))}
+        </ul>
       </section>
       <section aria-label="Messages">
         <h2 className="mb-2 font-semibold">Messages</h2>

@@ -239,6 +239,39 @@ def repo_fetch(ctx: Ctx, inp: EmptyIn) -> dict:
     return repo.fetch(Path(ctx.project["root"]))
 
 
+class DocsProposeIn(Input):
+    doc: str = Field(..., description="One of PRD, ARCHITECTURE, RULES, DESIGN, SECURITY.")
+    anchor: str = Field(..., min_length=1, max_length=200, description="Section heading to replace or append.")
+    content: str = Field(..., min_length=1, max_length=100_000, description="Section body, no heading line.")
+    evidence: list[str] = Field(default_factory=list, max_length=50)
+
+
+@op("docs_propose", DocsProposeIn, AGENT, "Propose a doc section. The daemon assigns code_derived or intent; "
+    "valid code-derived sections apply at once, intent waits for human approval.", tool=True)
+def docs_propose(ctx: Ctx, inp: DocsProposeIn) -> dict:
+    return {"proposal": docs.propose(ctx.tx, ctx.actor, Path(ctx.project["root"]), ctx.now, inp.doc, inp.anchor,
+                                     inp.content, inp.evidence)}
+
+
+class DocsDecideIn(Input):
+    id: str
+    approve: bool = Field(..., description="True applies the section atomically; false rejects it.")
+
+
+@op("docs_decide", DocsDecideIn, HUMAN, "Approve (apply) or reject a doc proposal.")
+def docs_decide(ctx: Ctx, inp: DocsDecideIn) -> dict:
+    return {"proposal": docs.decide(ctx.tx, ctx.actor, Path(ctx.project["root"]), ctx.now, inp.id, inp.approve)}
+
+
+class DocsProposalsIn(Input):
+    status: Literal["pending", "applying", "applied", "rejected", "conflicted"] | None = None
+
+
+@op("docs_proposals", DocsProposalsIn, BOTH, "Doc proposals and their apply status.", read_only=True)
+def docs_proposals(ctx: Ctx, inp: DocsProposalsIn) -> dict:
+    return {"proposals": docs.listing(ctx.tx, inp.status)}
+
+
 class SprintCreateIn(Input):
     name: str = Field(..., max_length=100)
     goal: str = Field("", max_length=1000)
