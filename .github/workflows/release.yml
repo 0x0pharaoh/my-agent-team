@@ -25,6 +25,8 @@ jobs:
         working-directory: server
       # Wheel only: the sdist omits gitignored static/, so 0.1.0 ships the wheel.
       # --no-build-isolation keeps the ../README.md reference resolvable.
+      - run: test "${GITHUB_REF_NAME#v}" = "$(uv version --short)"
+        working-directory: server
       - run: uv build --no-build-isolation --wheel
         working-directory: server
       - uses: actions/upload-artifact@v4
@@ -35,6 +37,7 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    environment: pypi
     permissions:
       id-token: write
     steps:
