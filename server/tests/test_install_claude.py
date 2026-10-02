@@ -60,3 +60,58 @@ async def test_plugin_installs_from_marketplace_sandboxed(tmp_path, monkeypatch)
     listed = _run(cli, "plugin", "list", env=env)
     assert "my-team@my-team" in listed.stdout
     assert not list(cached.rglob("node_modules"))
+
+
+def test_install_stops_at_first_failure(monkeypatch, capsys):
+    from my_team.installers import claude_code
+    monkeypatch.setattr(claude_code, "cli_path", lambda: "/fake/my-team.exe")
+    calls = []
+    real_run = subprocess.run
+
+    def fake_run(step, **kwargs):
+        if step[0] != "claude":
+            return real_run(step, **kwargs)
+        calls.append(step)
+        return subprocess.CompletedProcess(step, 1 if len(calls) == 1 else 0)
+
+    monkeypatch.setattr(claude_code.subprocess, "run", fake_run)
+    assert claude_code.install(yes=True) == 1
+    assert len(calls) == 1
+    assert "rc=1" in capsys.readouterr().out
+
+
+def test_install_prints_done_on_success(monkeypatch, capsys):
+    from my_team.installers import claude_code
+    monkeypatch.setattr(claude_code, "cli_path", lambda: "/fake/my-team.exe")
+    calls = []
+    real_run = subprocess.run
+
+    def fake_run(step, **kwargs):
+        if step[0] != "claude":
+            return real_run(step, **kwargs)
+        calls.append(step)
+        return subprocess.CompletedProcess(step, 0)
+
+    monkeypatch.setattr(claude_code.subprocess, "run", fake_run)
+    assert claude_code.install(yes=True) == 0
+    assert len(calls) == 2
+    assert "Done." in capsys.readouterr().out
+
+
+def test_wheel_fallback_pins_release_tag(monkeypatch):
+    from my_team import __version__
+    from my_team.installers import claude_code
+    monkeypatch.setattr(claude_code, "checkout", lambda: None)
+    monkeypatch.setattr(claude_code, "cli_path", lambda: "/fake/my-team.exe")
+    seen = {}
+    real_run = subprocess.run
+
+    def fake_run(step, **kwargs):
+        if step[0] != "claude":
+            return real_run(step, **kwargs)
+        return subprocess.CompletedProcess(step, 0)
+
+    monkeypatch.setattr(claude_code, "confirm", lambda plan, yes: seen.setdefault("plan", plan) or True)
+    monkeypatch.setattr(claude_code.subprocess, "run", fake_run)
+    assert claude_code.install(yes=True) == 0
+    assert f"https://github.com/0x0pharaoh/my-agent-team.git#v{__version__}" in seen["plan"][1]
