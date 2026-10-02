@@ -24,8 +24,8 @@ file in the user data directory. The only files written inside a project reposit
 (identity, written once) and the mapped documentation files.
 
 **Components.**
-- **Skill** (`skills/my-team/`): all behaviour text, meaning rules, command procedures, document templates, and the
-  review protocol.
+- **Skill** (`plugins/my-team/skills/my-team/`): all behaviour text, meaning rules, command procedures, document
+  templates, and the review protocol.
 - **Adapters:** packaging that maps the skill, hooks, and MCP configuration onto each agent's native format.
   Adapters contain no behaviour text.
 - **MCP shim** (`my-team mcp`): one stdio process per agent session. Exposes 12 tools, attaches notices to every
@@ -90,10 +90,8 @@ Current (S0) and planned layout. Directories marked *planned* are created in the
 | Path | Purpose |
 |---|---|
 | `.claude-plugin/`, `.codex-plugin/`, `.agents/plugins/` | Plugin manifests and marketplaces *(planned: S1, S5)* |
-| `skills/my-team/` | The skill: `SKILL.md`, `references/`, `templates/` *(planned: S1)* |
-| `commands/` | Claude Code entry points for `/my-team:*` *(planned: S1)* |
-| `hooks/`, `.mcp.json` | Claude Code hook and MCP wiring *(planned: S1)* |
-| `adapters/` | OpenCode plugin and Hermes templates rendered by `my-team install` *(planned: S5)* |
+| `plugins/my-team/` | Claude Code plugin: `skills/my-team/`, `commands/` for `/my-team:*`, `hooks/` |
+| `adapters/` | OpenCode plugin and Hermes templates rendered by `my-team install` |
 | `server/` | Python package `my_team`: CLI, daemon, domain services, MCP shim, scanner, tests |
 | `ui/` | Dashboard source *(planned: S1)* |
 | `docs/` | These five documents; installation and agent-integration guides come in S6 |

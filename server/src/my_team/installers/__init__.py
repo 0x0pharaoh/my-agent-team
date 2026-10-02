@@ -17,9 +17,9 @@ def checkout() -> Path | None:
 
 
 def content_root() -> Path:
-    """skills/ and adapters/ location: wheel data when packaged, else the repo checkout."""
+    """plugins/ and adapters/ location: wheel data when packaged, else the repo checkout."""
     packaged = Path(__file__).resolve().parent.parent / "data"
-    if (packaged / "skills" / "my-team" / "SKILL.md").is_file():
+    if (packaged / "plugins" / "my-team" / "skills" / "my-team" / "SKILL.md").is_file():
         return packaged
     root = checkout()
     if root is None:
@@ -32,7 +32,7 @@ def adapter(*parts: str) -> Path:
 
 
 def skill_source() -> Path:
-    return content_root() / "skills" / "my-team"
+    return content_root() / "plugins" / "my-team" / "skills" / "my-team"
 
 
 def copy_skill(target: Path) -> bool:

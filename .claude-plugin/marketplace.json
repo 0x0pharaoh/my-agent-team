@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "my-team",
-      "source": "./",
+      "source": "./plugins/my-team",
       "description": "Shared memory, messaging and Jira-style tickets for AI coding agents, supervised from a local dashboard.",
       "category": "development"
     }

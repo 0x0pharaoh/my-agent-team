@@ -97,7 +97,7 @@ A **single repository**. It is simultaneously:
 - a web application (`ui/`)
 
 Boundaries:
-- `skills/my-team/` holds all behaviour text. Adapters, commands, and hooks only reference it.
+- `plugins/my-team/skills/my-team/` holds all behaviour text. Adapters, commands, and hooks only reference it.
 - `server/` is the only code that touches SQLite. The UI and agents reach state through the daemon's API.
 - `ui/` builds to static files that the Python package ships. The UI never calls anything other than the daemon.
 - `docs/` is authoritative for intent. The plan document used during design is not.

@@ -34,5 +34,5 @@ packages = ["src/my_team"]
 artifacts = ["src/my_team/static"]
 
 [tool.hatch.build.force-include]
-"../skills" = "my_team/data/skills"
+"../plugins" = "my_team/data/plugins"
 "../adapters" = "my_team/data/adapters"
