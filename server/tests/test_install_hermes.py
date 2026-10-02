@@ -228,7 +228,7 @@ class TestInstallHermes:
             assert argv[argv.index("--env") + 1] == "MY_TEAM_AGENT_TYPE=hermes"
 
     def test_ensure_hooks_leaves_existing_hooks_block_alone(
-        self, tmp_path: Path, patched_env: dict, venv_myteam_cli: Path
+        self, tmp_path: Path, patched_env: dict, venv_myteam_cli: Path, capsys: pytest.CaptureFixture
     ) -> None:
         home = tmp_path / "hermes-home"
         before = "mcp_servers: {}\nhooks:\n  pre_llm_call: []\n"
@@ -239,6 +239,7 @@ class TestInstallHermes:
         ):
             hermes_installer._ensure_hooks(home, "/no/such/hermes", str(venv_myteam_cli))
         assert _read_config_text(home) == before
+        assert "\nhooks:\n" not in capsys.readouterr().out
 
     def test_real_localappdata_hermes_config_mtime_unchanged(self, tmp_path: Path) -> None:
         """The real %LOCALAPPDATA%/hermes/config.yaml mtime is unchanged after install."""

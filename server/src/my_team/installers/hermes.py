@@ -117,7 +117,7 @@ def _ensure_mcp(home: Path, hermes_cli: str, myteam_cli: str) -> None:
 
 
 def _ensure_hooks(home: Path, hermes_cli: str, myteam_cli: str) -> None:
-    """Append shell hooks to config.yaml directly; a `hermes hooks` CLI does not exist."""
+    """Append shell hooks to config.yaml directly; `hermes hooks` has list/test/doctor but no `add`."""
     cfg_path = config_path(home)
     _merge_hooks_text(cfg_path, myteam_cli)
 
@@ -129,7 +129,7 @@ def _merge_hooks_text(cfg_path: Path, myteam_cli: str) -> None:
         print("Hermes hooks for my-team already registered")
         return
     if re.search(r"^hooks\s*:", text, re.MULTILINE):
-        snippet = _hooks_text_block(myteam_cli)
+        snippet = _hooks_text_block(myteam_cli).replace("hooks:\n", "", 1)
         print(f"--- paste into your config.yaml under `hooks:` ---\n{snippet}---\n")
         return
     if text.strip():
@@ -169,4 +169,6 @@ def install(yes: bool) -> int:
     _ensure_mcp(home, hermes_cli, myteam_cli)
     _ensure_hooks(home, hermes_cli, myteam_cli)
     _ensure_autostart()
+    print("\nNext steps: approve the hooks on the first terminal `hermes` run (or set hooks_auto_accept), "
+          "check `hermes hooks list`, then restart Hermes.")
     return 0
