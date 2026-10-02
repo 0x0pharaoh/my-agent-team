@@ -52,11 +52,12 @@ const COLUMNS = [
   ["proposed", "Proposed"], ["backlog", "Backlog"], ["ready", "Ready"], ["in_progress", "In progress"],
   ["in_review", "In review"], ["blocked", "Blocked"], ["done", "Done"],
 ] as const;
-type Tab = "board" | "backlog" | "inbox" | "memory" | "agents" | "docs" | "repo";
+type Tab = "board" | "backlog" | "inbox" | "memory" | "agents" | "docs" | "repo" | "settings";
 const TABS: [Tab, string][] = [
   ["board", "Board"], ["backlog", "Backlog"], ["inbox", "Inbox"], ["memory", "Memory"], ["agents", "Agents"],
-  ["docs", "Docs"], ["repo", "Repo"],
+  ["docs", "Docs"], ["repo", "Repo"], ["settings", "Settings"],
 ];
+type Matrix = { scopes: string[]; agents: string[]; cells: Record<string, Record<string, string>> };
 type Doc = {
   name: string; present: boolean; fields?: Record<string, string>; text?: string; tbd?: number; inferred?: number;
   sections?: { title: string; tbd: number; inferred: boolean }[];
@@ -503,6 +504,31 @@ const SESSION_TONE: Record<string, [string, ReactNode]> = {
   unknown: ["text-warning", <AlertTriangle size={12} />],
 };
 
+function SettingsView({ project, tick }: { project: string; tick: number }) {
+  const [matrix, setMatrix] = useState<Matrix | null>(null);
+  useEffect(() => {
+    op<Matrix>(project, "activation_matrix").then((r) => setMatrix(r.data));
+  }, [project, tick]);
+  if (!matrix) return <p className="text-muted">Loading activation matrix…</p>;
+  return (
+    <section aria-label="Activation">
+      <h2 className="mb-2 font-semibold">Activation enforcement by scope and agent</h2>
+      <table className="w-full text-left text-sm">
+        <thead className="text-muted"><tr><th className="py-1">Scope</th>
+          {matrix.agents.map((agent) => <th key={agent}>{agent}</th>)}</tr></thead>
+        <tbody>
+          {matrix.scopes.map((scope) => (
+            <tr key={scope} className="border-t border-border">
+              <td className="py-1 font-medium">{scope}</td>
+              {matrix.agents.map((agent) => <td key={agent}>{matrix.cells[scope][agent]}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
 function AgentsView({ agents, run }: { agents: Agent[]; run: (name: string, body: object) => void }) {
   const now = useNow();
   if (agents.length === 0) {
@@ -809,6 +835,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       {board && projectId && tab === "docs" && <DocsView project={projectId} tick={tick} />}
       {board && projectId && tab === "repo" && <RepoView project={projectId} tick={tick} />}
       {board && projectId && tab === "agents" && <AgentsView agents={board.agents} run={run} />}
+      {board && projectId && tab === "settings" && <SettingsView project={projectId} tick={tick} />}
     </div>
   );
 }

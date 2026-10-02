@@ -143,7 +143,7 @@ class Shim:
                                                {"new_native_id": native}, previous["session_id"])
             else:
                 info = await asyncio.to_thread(self.client.project, project["id"], "session_register", {
-                    "agent_type": self.agent_type, "native_id": native, "root_path": self.cwd,
+                    "agent_type": self.agent_type, "native_id": native, "root_path": self.cwd, "via": "mcp",
                     "agent_name": os.environ.get("MY_TEAM_AGENT") or None})
             self.sessions[native] = info
             if single:

@@ -277,6 +277,12 @@ def init_status(ctx: Ctx, inp: EmptyIn) -> dict:
     return init.checklist(ctx.tx, Path(ctx.project["root"]))
 
 
+@op("activation_matrix", EmptyIn, BOTH, "Scope x agent enforcement from observed hook and MCP evidence.",
+    read_only=True)
+def activation_matrix(ctx: Ctx, inp: EmptyIn) -> dict:
+    return sessions.matrix(ctx.tx, ctx.now)
+
+
 class SprintCreateIn(Input):
     name: str = Field(..., max_length=100)
     goal: str = Field("", max_length=1000)
@@ -325,12 +331,13 @@ class SessionRegisterIn(Input):
     native_id: str = Field(..., min_length=1, max_length=200)
     root_path: str | None = None
     agent_name: str | None = None
+    via: Literal["hook", "mcp"] | None = Field(None, description="Which surface registered: exec-form hook or MCP.")
 
 
 @op("session_register", SessionRegisterIn, AGENT, "Register or resume an agent session.")
 def session_register(ctx: Ctx, inp: SessionRegisterIn) -> dict:
     row = sessions.register(ctx.tx, agent_type=inp.agent_type, native_id=inp.native_id, root_path=inp.root_path,
-                            now=ctx.now, agent_name=inp.agent_name)
+                            now=ctx.now, agent_name=inp.agent_name, via=inp.via)
     return {"session_id": row["id"], "agent": row["agent_name"], "agent_id": row["agent_id"],
             "context_sent": bool(row["context_sent"])}
 

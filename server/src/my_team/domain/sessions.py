@@ -1,3 +1,4 @@
+from my_team import activation
 from my_team.actor import SYSTEM, Actor
 from my_team.db.engine import Tx
 from my_team.domain import events
@@ -9,6 +10,8 @@ OFFLINE_AFTER_MS = 90_000
 IDLE_AFTER_MS = 5 * 60_000
 STALL_AFTER_MS = 15 * 60_000
 RESTART_GRACE_MS = 2 * 60_000
+AGENT_TYPES = ("claude-code", "codex", "opencode", "hermes")
+EVIDENCE_FRESH_MS = 7 * 24 * 3600_000
 
 
 def liveness(row, now: int, daemon_started_ms: int) -> str:
@@ -66,11 +69,12 @@ def _free_seat(tx: Tx, agent_type: str, now: int) -> str:
 
 
 def register(tx: Tx, *, agent_type: str, native_id: str, root_path: str | None, now: int,
-             agent_name: str | None = None, agent_id: str | None = None):
+             agent_name: str | None = None, agent_id: str | None = None, via: str | None = None):
     existing = tx.one("SELECT id FROM sessions WHERE agent_type = ? AND native_session_id = ?", (agent_type, native_id))
     if existing:
         tx.execute("UPDATE sessions SET last_heartbeat_ms = ?, last_activity_ms = ?, ended_ms = NULL,"
                    " root_path = COALESCE(?, root_path) WHERE id = ?", (now, now, root_path, existing["id"]))
+        _touch_evidence(tx, agent_type, now, via)
         return get(tx, existing["id"])
     if agent_id is None:
         agent_id = _named_agent(tx, agent_type, agent_name) if agent_name else _free_seat(tx, agent_type, now)
@@ -81,10 +85,53 @@ def register(tx: Tx, *, agent_type: str, native_id: str, root_path: str | None, 
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(id), 0) FROM events))",
         (session_id, agent_id, agent_type, native_id, root_path, now, now, now),
     )
+    _touch_evidence(tx, agent_type, now, via)
     row = get(tx, session_id)
     events.emit(tx, "session.started", "session", session_id, Actor("agent", agent_id, session_id, agent_id),
                 {"agent": row["agent_name"], "agent_type": agent_type}, now)
     return row
+
+
+def _touch_evidence(tx: Tx, agent_type: str, now: int, via: str | None) -> None:
+    if via == "hook":
+        tx.execute("INSERT INTO agent_evidence (agent_type, hook_seen_ms) VALUES (?, ?)"
+                   " ON CONFLICT(agent_type) DO UPDATE SET hook_seen_ms = excluded.hook_seen_ms",
+                   (agent_type, now))
+    elif via == "mcp":
+        tx.execute("INSERT INTO agent_evidence (agent_type, mcp_seen_ms) VALUES (?, ?)"
+                   " ON CONFLICT(agent_type) DO UPDATE SET mcp_seen_ms = excluded.mcp_seen_ms",
+                   (agent_type, now))
+
+
+def matrix(tx: Tx, now: int) -> dict:
+    """Scope x agent enforcement from observed evidence: Enforced, On invocation only, Not installed, Unknown."""
+    state = activation.load()
+    evidence = {row["agent_type"]: row for row in tx.all("SELECT * FROM agent_evidence")}
+    scopes = {
+        "global": bool(state.get("global")),
+        "directory": any(v == "on" for v in state.get("directories", {}).values()),
+        "session": any(e.get("state") == "on" and "task" not in e for e in state.get("sessions", {}).values()),
+        "one-time": any(e.get("state") == "on" and "task" in e for e in state.get("sessions", {}).values()),
+    }
+    cells = {}
+    for scope, on in scopes.items():
+        cells[scope] = {}
+        for agent in AGENT_TYPES:
+            ev = evidence.get(agent)
+            if ev is None:
+                cells[scope][agent] = "Not installed"
+                continue
+            hook = ev["hook_seen_ms"] or 0
+            mcp = ev["mcp_seen_ms"] or 0
+            if not on:
+                cells[scope][agent] = "Unknown"
+            elif now - hook <= EVIDENCE_FRESH_MS:
+                cells[scope][agent] = "Enforced"
+            elif now - mcp <= EVIDENCE_FRESH_MS:
+                cells[scope][agent] = "On invocation only"
+            else:
+                cells[scope][agent] = "Unknown"
+    return {"scopes": list(scopes), "agents": list(AGENT_TYPES), "cells": cells}
 
 
 def succeed(tx: Tx, old_session_id: str, new_native_id: str, now: int):
