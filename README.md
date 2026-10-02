@@ -5,8 +5,8 @@ coding sessions (Claude Code, Codex, OpenCode, Hermes) that share project memory
 messages, and follow the same rules: minimal comments, strict DRY, a requirement review on every prompt, and five
 authoritative project documents.
 
-**Status: 0.1.0 pre-release.** Daemon, tickets, memory, messaging, dashboard, and installers for Claude Code,
-Codex, OpenCode, and Hermes work end to end.
+**Status: 0.1.0 pre-release.** OpenCode is verified live end to end; Claude Code, Codex, and Hermes are
+unit-tested only, with live verification still pending.
 
 ## Use it (Windows/macOS/Linux)
 
