@@ -7,6 +7,7 @@ test("created ticket is assigned, claimed, and shows In progress", async ({ page
   await page.goto("/");
   await page.getByLabel("Passphrase").fill(s.passphrase);
   await page.getByRole("button", { name: "Log in" }).click();
+  await expect(page.locator('section[aria-label="Setup"]')).toBeVisible();
   await page.getByLabel("New ticket title").fill("E2E ticket");
   await page.getByLabel(/Acceptance criteria/).fill("ships");
   await page.getByRole("button", { name: "Create ticket" }).click();

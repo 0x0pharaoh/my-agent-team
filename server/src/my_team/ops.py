@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from my_team import auth
 from my_team.actor import Actor
 from my_team.db.engine import Tx
-from my_team.domain import docs, events, guard, memory, messages, notices, projects, questions, repo, sessions, tickets
+from my_team.domain import docs, events, guard, init, memory, messages, notices, projects, questions, repo, sessions, tickets
 from my_team.errors import Conflict
 
 Status = Literal["proposed", "backlog", "ready", "in_progress", "in_review", "blocked", "done", "cancelled"]
@@ -270,6 +270,11 @@ class DocsProposalsIn(Input):
 @op("docs_proposals", DocsProposalsIn, BOTH, "Doc proposals and their apply status.", read_only=True)
 def docs_proposals(ctx: Ctx, inp: DocsProposalsIn) -> dict:
     return {"proposals": docs.listing(ctx.tx, inp.status)}
+
+
+@op("init_status", EmptyIn, BOTH, "Derived init checklist for this project.", read_only=True)
+def init_status(ctx: Ctx, inp: EmptyIn) -> dict:
+    return init.checklist(ctx.tx, Path(ctx.project["root"]))
 
 
 class SprintCreateIn(Input):
@@ -554,3 +559,18 @@ def auth_setup(ctx: RegistryCtx, inp: PassphraseIn) -> dict:
     ctx.tx.execute("INSERT INTO human_auth (id, passphrase_hash, updated_ms) VALUES (1, ?, ?)",
                    (auth.hash_passphrase(inp.passphrase), ctx.now))
     return {"ok": True}
+
+
+class InitClaimIn(CwdIn):
+    session_id: str = Field(..., min_length=1, max_length=200,
+                            description="Your my-team session id (from team_context); recorded as the claim holder.")
+
+
+@registry_op("init_claim", InitClaimIn, AGENT, "Claim init for this repo; another session holding it loads state instead.")
+def init_claim(ctx: RegistryCtx, inp: InitClaimIn) -> dict:
+    return init.claim(ctx.tx, inp.session_id, ctx.identity.repo_key, ctx.now)
+
+
+@registry_op("init_release", CwdIn, HUMAN, "Release a stale init claim so another session can proceed.")
+def init_release(ctx: RegistryCtx, inp: CwdIn) -> dict:
+    return init.release(ctx.tx, ctx.identity.repo_key)

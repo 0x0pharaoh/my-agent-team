@@ -19,6 +19,34 @@ type Session = { id: string; status: string; ticket: string | null; last_heartbe
 type Agent = { id: string; display_name: string; agent_type: string; role: string | null; sessions: Session[] };
 type Project = { id: string; name: string; key: string; roots: string[] };
 type Board = { tickets: Ticket[]; agents: Agent[]; sprints: Sprint[] };
+type SetupStatus = {
+  complete: boolean;
+  checklist: {
+    project_toml: boolean; activation: boolean; open_questions: number; init_tickets: number;
+    scan: string | null; docs: Record<string, { present: boolean; sections: number; pending_proposals: number }>;
+  };
+};
+
+function SetupCard({ status }: { status: SetupStatus }) {
+  const docs = Object.values(status.checklist.docs);
+  const rows: [string, boolean][] = [
+    ["project.toml present", status.checklist.project_toml],
+    [`docs present (${docs.filter((d) => d.present).length}/5)`, docs.every((d) => d.present)],
+    ["activation recorded", status.checklist.activation],
+    [`no open questions (${status.checklist.open_questions})`, status.checklist.open_questions === 0],
+  ];
+  return (
+    <section aria-label="Setup" className="mb-4 rounded-lg border border-border bg-surface p-3">
+      <h2 className="mb-1 text-sm font-semibold">Setup checklist</h2>
+      <ul className="text-sm">
+        {rows.map(([label, done]) => (
+          <li key={label}><span className={done ? "text-success" : "text-warning"}>{done ? "✓" : "○"}</span> {label}</li>
+        ))}
+        <li className="text-muted">init tickets pending: {status.checklist.init_tickets} · scan: untracked</li>
+      </ul>
+    </section>
+  );
+}
 
 const COLUMNS = [
   ["proposed", "Proposed"], ["backlog", "Backlog"], ["ready", "Ready"], ["in_progress", "In progress"],
@@ -688,6 +716,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [board, setBoard] = useState<Board | null>(null);
+  const [setup, setSetup] = useState<SetupStatus | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("board");
   const [tick, setTick] = useState(0);
@@ -705,12 +734,19 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     if (!projectId) return;
     const result = await op<Board>(projectId, "board");
     setBoard(result.data);
+    try {
+      const status = await op<SetupStatus>(projectId, "init_status");
+      setSetup(status.data.complete ? null : status.data);
+    } catch {
+      setSetup(null);
+    }
     setTick((value) => value + 1);
     setCursor((current) => current ?? result.cursor ?? null);
   }, [projectId]);
 
   useEffect(() => {
     setBoard(null);
+    setSetup(null);
     setCursor(null);
     reload();
   }, [reload]);
@@ -762,6 +798,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         <button className={secondary} onClick={logout} aria-label="Log out"><LogOut size={16} /></button>
       </header>
       {error && <p role="alert" className="mb-3 text-sm text-danger">{error}</p>}
+      {setup && <SetupCard status={setup} />}
       {projects.length === 0 && (
         <p className="text-muted">No projects yet. In an agent session, run <code className="font-mono">/my-team:init</code>.</p>
       )}
