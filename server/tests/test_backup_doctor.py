@@ -52,14 +52,16 @@ async def test_doctor_adapter_checks_pass_when_installed(agent, home, tmp_path, 
     _write(tmp_path / "oc" / "opencode.jsonc",
             '// project config\n{"mcp": {"servers": {"my-team": {"type": "local",}}},}\n')
     _write(tmp_path / "oc" / "plugins" / "my-team.js", "export default {};\n")
-    _write(tmp_path / "hermes" / "config.yaml", 'hooks:\n  pre_llm_call:\n    - command: "x hook prompt --agent hermes"\n')
+    _write(tmp_path / "hermes" / "config.yaml",
+            'hooks:\n  pre_llm_call:\n    - command: "x hook prompt --agent hermes"\n'
+            "mcp_servers:\n  my-team:\n    command: x\n")
     assert doctor.run() == 0
     report = capsys.readouterr().out
     assert "Claude Code plugin my-team enabled" in report
     assert "SKILL.md present" in report
     assert "Codex MCP server my-team registered" in report
     assert "OpenCode plugin + MCP entry present" in report
-    assert "Hermes hooks reference my-team" in report
+    assert "Hermes hooks + MCP server my-team present" in report
 
 
 async def test_doctor_adapter_checks_warn_only_when_missing(agent, home, tmp_path, monkeypatch, capsys):
@@ -73,3 +75,7 @@ async def test_doctor_adapter_checks_warn_only_when_missing(agent, home, tmp_pat
     assert doctor.run() == 0
     report = capsys.readouterr().out
     assert "not enabled" in report and "lacks my-team hooks" in report
+    _write(tmp_path / "hermes" / "config.yaml",
+            'hooks:\n  pre_llm_call:\n    - command: "x hook prompt --agent hermes"\n')
+    assert doctor.run() == 0
+    assert "MCP server my-team not registered" in capsys.readouterr().out

@@ -88,7 +88,7 @@ def _hooks_text_block(myteam_cli: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _mcp_registered(home: Path) -> bool:
+def mcp_registered(home: Path) -> bool:
     """True when config.yaml already lists my-team under mcp_servers (checked per block, not substring)."""
     try:
         text = config_path(home).read_text(encoding="utf-8")
@@ -104,7 +104,7 @@ def _mcp_registered(home: Path) -> bool:
 
 def _ensure_mcp(home: Path, hermes_cli: str, myteam_cli: str) -> None:
     """Register the MCP server via `hermes mcp add`, attached to the console for its prompts."""
-    if _mcp_registered(home):
+    if mcp_registered(home):
         print("MCP server my-team already registered")
         return
     cmd = [hermes_cli, "mcp", "add", HERMES_MCP_SERVER, "--command", myteam_cli,
@@ -115,7 +115,7 @@ def _ensure_mcp(home: Path, hermes_cli: str, myteam_cli: str) -> None:
     except (FileNotFoundError, OSError) as exc:
         print(f"hermes CLI not found: {exc}")
         return
-    if _mcp_registered(home):
+    if mcp_registered(home):
         print("MCP server my-team registered via hermes CLI")
     else:
         print(f"hermes mcp add did not register my-team (rc={proc.returncode}); add it manually")

@@ -14,7 +14,7 @@ from my_team.db.engine import latest_version
 from my_team.domain.repo import git_too_old
 from my_team.installers.codex import codex_home
 from my_team.installers.hermes import config_path as hermes_config_path
-from my_team.installers.hermes import hermes_home
+from my_team.installers.hermes import hermes_home, mcp_registered
 from my_team.installers.opencode import config_dir as opencode_config_dir
 from my_team.paths import _current_user_sid, data_dir
 
@@ -139,9 +139,11 @@ def _hermes() -> tuple[str, str]:
         text = hermes_config_path(hermes_home()).read_text(encoding="utf-8")
     except OSError:
         return "warn", "Hermes config not found; run `my-team install hermes`"
-    if "--agent hermes" in text:
-        return "pass", "Hermes hooks reference my-team"
-    return "warn", "Hermes config lacks my-team hooks"
+    if "--agent hermes" not in text:
+        return "warn", "Hermes config lacks my-team hooks"
+    if not mcp_registered(hermes_home()):
+        return "warn", "Hermes hooks present but MCP server my-team not registered"
+    return "pass", "Hermes hooks + MCP server my-team present"
 
 
 def _private(path: Path) -> tuple[str, str]:
