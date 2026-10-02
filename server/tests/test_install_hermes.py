@@ -18,6 +18,37 @@ def _fake_hermes_cli(tmp_path: Path) -> Path:
     return cli
 
 
+def _stub_hermes_input(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cfg: Path, mode: str, rc: int = 0) -> str:
+    """Executable stub hermes: input mode calls input() then exits 1; write mode registers and exits rc."""
+    import sys
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    stub = bindir / "stub_input.py"
+    stub.write_text(
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        f"mode = {mode!r}\n"
+        "if mode == 'input':\n"
+        "    try:\n"
+        "        input()\n"
+        "    except (EOFError, OSError):\n"
+        "        pass\n"
+        "    sys.exit(1)\n"
+        "cfg = Path(os.environ['MY_TEAM_TEST_HERMES_CONFIG'])\n"
+        "cfg.parent.mkdir(parents=True, exist_ok=True)\n"
+        "with cfg.open('a', encoding='utf-8') as f:\n"
+        "    f.write('\\nmcp_servers:\\n  my-team:\\n    command: added\\n')\n"
+        f"sys.exit({rc})\n",
+        encoding="utf-8",
+    )
+    (bindir / "hermes-in").write_text("#!/usr/bin/env python3\n" + stub.read_text(encoding="utf-8"),
+                                      encoding="utf-8")
+    (bindir / "hermes-in").chmod(0o755)
+    (bindir / "hermes-in.bat").write_text(f'@"{sys.executable}" "{stub}" %*\n', encoding="utf-8")
+    monkeypatch.setenv("MY_TEAM_TEST_HERMES_CONFIG", str(cfg))
+    return str(bindir / "hermes-in.bat") if os.name == "nt" else str(bindir / "hermes-in")
+
+
 def _write_config(home: Path, text: str) -> None:
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(text, encoding="utf-8")
@@ -126,6 +157,38 @@ class TestInstallHermes:
             patch("subprocess.run", side_effect=FileNotFoundError("not found")),
         ):
             hermes_installer._ensure_mcp(home, "/no/such/hermes", "/fake/my-team")
+
+    def test_ensure_mcp_skips_when_already_registered(
+        self, tmp_path: Path, patched_env: dict, capsys: pytest.CaptureFixture
+    ) -> None:
+        home = tmp_path / "hermes-home"
+        _write_config(home, "mcp_servers:\n  my-team:\n    command: old\n")
+        with patch.dict(os.environ, patched_env, clear=False), patch("subprocess.run") as mock_run:
+            hermes_installer._ensure_mcp(home, "/no/such/hermes", "/fake/my-team")
+            mock_run.assert_not_called()
+        assert "already registered" in capsys.readouterr().out
+
+    def test_ensure_mcp_survives_eof_on_interactive_prompt(
+        self, tmp_path: Path, patched_env: dict, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture
+    ) -> None:
+        if os.isatty(0):
+            pytest.skip("stub input() needs EOF stdin")
+        home = tmp_path / "hermes-home"
+        stub = _stub_hermes_input(tmp_path, monkeypatch, home / "config.yaml", mode="input")
+        with patch.dict(os.environ, patched_env, clear=False):
+            hermes_installer._ensure_mcp(home, stub, "/fake/my-team")
+        assert "did not register" in capsys.readouterr().out
+
+    def test_ensure_mcp_success_decided_by_reread_not_rc(
+        self, tmp_path: Path, patched_env: dict, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture
+    ) -> None:
+        home = tmp_path / "hermes-home"
+        stub = _stub_hermes_input(tmp_path, monkeypatch, home / "config.yaml", mode="write", rc=1)
+        with patch.dict(os.environ, patched_env, clear=False):
+            hermes_installer._ensure_mcp(home, stub, "/fake/my-team")
+        assert "registered via hermes CLI" in capsys.readouterr().out
 
     def test_ensure_hooks_writes_config_yaml(
         self, tmp_path: Path, patched_env: dict, venv_myteam_cli: Path
