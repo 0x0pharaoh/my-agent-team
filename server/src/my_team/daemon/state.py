@@ -2,6 +2,7 @@ import asyncio
 import secrets
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from my_team import auth
 from my_team.clock import now_ms
@@ -73,6 +74,14 @@ class DaemonState:
                 db.write_sync(_ensure_epoch)
                 self._projects[project_id] = db
             return db
+
+    def close_project_db(self, project_id: str) -> Path:
+        """Shut the writer down and forget it, so its file can be replaced. Always returns the live path."""
+        with self._lock:
+            db = self._projects.pop(project_id, None)
+        if db is not None:
+            db.close()
+        return projects_dir() / f"{project_id}.db"
 
     async def project(self, project_id: str) -> dict:
         info = await self.registry.read(lambda tx: projects.get(tx, project_id))

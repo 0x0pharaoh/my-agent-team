@@ -38,6 +38,11 @@ class Tx:
         return row[0] if row else None
 
 
+def _vacuum_now(tx: Tx) -> None:
+    tx.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    tx.conn.execute("VACUUM")
+
+
 def connect(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path, isolation_level=None)
     conn.row_factory = sqlite3.Row
@@ -138,6 +143,10 @@ class Database:
 
     def write_sync(self, fn: Callable[[Tx], Any]) -> Any:
         return self.submit(fn, True).result()
+
+    def vacuum_sync(self) -> None:
+        """Checkpoint, then VACUUM outside any transaction (VACUUM cannot run inside one)."""
+        return self.submit(_vacuum_now, False).result()
 
     async def read(self, fn: Callable[[Tx], Any]) -> Any:
         return await asyncio.wrap_future(self.submit(fn, False))

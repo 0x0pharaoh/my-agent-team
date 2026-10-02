@@ -3,6 +3,8 @@
 ## Unreleased
 
 - WebAuthn passkeys: add/remove in Settings, log in with a security key; passphrase still works.
+- Memory purge (human-only overwrite + vacuum + backup flags) and database restore with integrity,
+  schema and trigger checks; purge button and restore section in the dashboard.
 
 ## 0.1.0
 
