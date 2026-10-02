@@ -58,9 +58,13 @@ def _setup(args) -> int:
 
 
 def _call(args) -> int:
-    from my_team.client import DaemonError, connect
+    from my_team.client import DaemonError, DaemonUnavailable, connect
     payload = json.loads(args.payload or "{}")
-    client = connect()
+    try:
+        client = connect()
+    except DaemonUnavailable as exc:
+        print(exc)
+        return 1
     try:
         if args.project:
             data = client.project(args.project, args.op, payload, args.session)
