@@ -10,13 +10,11 @@ from pathlib import Path
 
 from my_team.config import load as config_load
 from my_team.config import save as config_save
-from my_team.installers import adapter, cli_path as my_team_cli_path
+from my_team.installers import cli_path as my_team_cli_path
 from my_team.installers import confirm, copy_skill
 
 HERMES_MCP_SERVER = "my-team"
 HERMES_HOOKS_AGENT = "hermes"
-
-PLUGIN_SRC = adapter("hermes", "plugin")
 
 
 def hermes_home() -> Path:
@@ -35,10 +33,6 @@ def _skill_dest(home: Path) -> Path:
 
 def config_path(home: Path) -> Path:
     return home / "config.yaml"
-
-
-def _plugin_dest(home: Path) -> Path:
-    return home / "plugins" / "my-team"
 
 
 def _hermes_exe() -> str | None:
@@ -66,29 +60,6 @@ def _install_skill(home: Path) -> None:
         print(f"installed skill: {dst}")
     else:
         print(f"skill already installed: {dst}")
-
-
-def _install_plugin(home: Path, myteam_cli: str) -> None:
-    """Copy the bridge plugin, baking in the absolute my-team CLI path (no PATH fallback)."""
-    dst = _plugin_dest(home)
-    if dst.exists():
-        print(f"plugin already installed: {dst}")
-        return
-    dst.mkdir(parents=True, exist_ok=True)
-    for child in PLUGIN_SRC.iterdir():
-        if child.name == "__pycache__":
-            continue
-        if child.is_file():
-            shutil.copy2(child, dst / child.name)
-        else:
-            shutil.copytree(child, dst / child.name)
-    init_py = dst / "__init__.py"
-    content = init_py.read_text(encoding="utf-8")
-    old = 'return os.environ.get("HERMES_MY_TEAM_CLI") or shutil.which("my-team") or "my-team"'
-    new = f'return os.environ.get("HERMES_MY_TEAM_CLI") or {json.dumps(myteam_cli)}'
-    content = content.replace(old, new)
-    init_py.write_text(content, encoding="utf-8")
-    print(f"installed plugin: {dst}")
 
 
 def _hooks_registered(text: str) -> bool:
@@ -182,7 +153,6 @@ def _ensure_autostart() -> None:
 def _build_plan(home: Path, hermes_cli: str, myteam_cli: str) -> list[str]:
     return [
         f"install skill to {_skill_dest(home)}",
-        f"install kanban bridge plugin to {_plugin_dest(home)}",
         f"register MCP server ({hermes_cli} mcp add {HERMES_MCP_SERVER} ...)",
         "append pre_llm_call + pre_tool_call hooks to config.yaml",
         "enable autostart in my-team config",
@@ -196,7 +166,6 @@ def install(yes: bool) -> int:
     if not confirm(_build_plan(home, hermes_cli, myteam_cli), yes):
         return 1
     _install_skill(home)
-    _install_plugin(home, myteam_cli)
     _ensure_mcp(home, hermes_cli, myteam_cli)
     _ensure_hooks(home, hermes_cli, myteam_cli)
     _ensure_autostart()

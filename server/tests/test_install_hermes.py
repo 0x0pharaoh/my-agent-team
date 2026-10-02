@@ -305,11 +305,6 @@ class TestInstallHermes:
         assert confirm_mock.call_args[0][1] is True
         text = _read_config_text(home)
         assert "--agent hermes" in text
-        plugin_init = (home / "plugins" / "my-team" / "__init__.py").read_text(encoding="utf-8")
-        assert json.dumps(cli) in plugin_init
-        assert 'shutil.which("my-team")' not in plugin_init
-        assert (home / "plugins" / "my-team" / "plugin.yaml").is_file()
-        assert (home / "plugins" / "my-team" / "bridge.py").is_file()
 
     def test_install_end_to_end_falls_back_when_hermes_cli_missing(
         self, tmp_path: Path, patched_env: dict, venv_myteam_cli: Path
