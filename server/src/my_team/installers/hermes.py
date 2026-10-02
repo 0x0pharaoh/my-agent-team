@@ -99,6 +99,7 @@ def _hooks_text_block(myteam_cli: str) -> str:
     """Hook commands as JSON strings: Hermes splits with shlex posix=False, so one quote layer survives."""
     cmd_prompt = f'"{myteam_cli}" hook prompt --agent hermes'
     cmd_tool = f'"{myteam_cli}" hook tool --agent hermes'
+    cmd_pre_edit = f'"{myteam_cli}" hook pre-edit --agent hermes'
     return (
         "hooks:\n"
         f"  pre_llm_call:\n"
@@ -106,6 +107,8 @@ def _hooks_text_block(myteam_cli: str) -> str:
         f"  pre_tool_call:\n"
         f'    - matcher: "mcp__my_team__.*"\n'
         f"      command: {json.dumps(cmd_tool)}\n"
+        f'    - matcher: "write_file|patch"\n'
+        f"      command: {json.dumps(cmd_pre_edit)}\n"
     )
 
 

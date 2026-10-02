@@ -198,6 +198,7 @@ class TestInstallHermes:
         cli = str(venv_myteam_cli)
         cmd_prompt = f'"{cli}" hook prompt --agent hermes'
         cmd_tool = f'"{cli}" hook tool --agent hermes'
+        cmd_pre_edit = f'"{cli}" hook pre-edit --agent hermes'
         with (
             patch.dict(os.environ, patched_env, clear=False),
             patch.object(hermes_installer, "_hermes_cli", return_value="/no/such/hermes"),
@@ -206,10 +207,11 @@ class TestInstallHermes:
         text = _read_config_text(home)
         assert "--agent hermes" in text
         assert 'matcher: "mcp__my_team__.*"' in text
+        assert 'matcher: "write_file|patch"' in text
         for line in text.splitlines():
             if "command:" in line:
                 val = line.split("command:", 1)[1].strip()
-                assert json.loads(val) in (cmd_prompt, cmd_tool)
+                assert json.loads(val) in (cmd_prompt, cmd_tool, cmd_pre_edit)
 
     def test_ensure_mcp_passes_agent_type_env_before_args(
         self, tmp_path: Path, patched_env: dict, venv_myteam_cli: Path

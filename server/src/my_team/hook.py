@@ -59,8 +59,9 @@ def pre_edit_text(agent: str, payload: dict) -> str | None:
         _, client, project, session = _session(agent, native, cwd)
         if client is None or project is None:
             return None
-        verdict = client.project(project["id"], "edit_check", {"path": payload.get("file_path")},
-                                 session["session_id"])
+        # ponytail: single path only; V4A multi-file patches stay unchecked until the hook loops files
+        path = payload.get("file_path") or (payload.get("tool_input") or {}).get("path")
+        verdict = client.project(project["id"], "edit_check", {"path": path}, session["session_id"])
     except Exception:
         return None
     return verdict["reason"] if verdict["decision"] == "ask" else None
@@ -70,6 +71,8 @@ def run(event: str, agent: str) -> int:
     payload = json.loads(sys.stdin.read() or "{}")
     if event == "pre-edit":
         text = pre_edit_text(agent, payload)
+        if agent == "hermes" and text:
+            text = json.dumps({"action": "approve", "message": text})
     elif event == "tool":
         session = payload.get("session_id")
         text = json.dumps({"action": "modify", "args": {"session": session}}) if session else None

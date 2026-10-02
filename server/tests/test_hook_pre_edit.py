@@ -116,3 +116,14 @@ async def test_run_prints_reason_only_on_ask(hooked, http, state, repo, human, m
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
     assert await anyio.to_thread.run_sync(hook.run, "pre-edit", "opencode") == 0
     assert capsys.readouterr().out == ""
+
+
+async def test_hermes_tool_input_path_asks_with_approve_json(hooked, http, state, repo, monkeypatch, capsys):
+    activation.set_scope("directory", True, cwd=str(repo))
+    await Agent(http, state, agent_type="hermes", native_id="op-1").join(repo)
+    payload = {"session_id": "op-1", "cwd": str(repo), "tool_input": {"path": str(repo / "src/app.py")}}
+    reason = await anyio.to_thread.run_sync(hook.pre_edit_text, "hermes", payload)
+    assert reason and "no claimed ticket" in reason
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    assert await anyio.to_thread.run_sync(hook.run, "pre-edit", "hermes") == 0
+    assert json.loads(capsys.readouterr().out) == {"action": "approve", "message": reason}
