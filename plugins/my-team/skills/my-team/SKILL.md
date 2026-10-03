@@ -103,7 +103,7 @@ invent requirements. Decide routine details yourself: naming, local structure, t
   - `all`, for rare broadcasts;
   - `human`, for the human.
   Report blockers and findings there.
-- **When a notice says you have unread messages,** call `inbox`, handle them, and `ack` their ids.
+- **The human's messages come first.** When your context says the human is waiting for a reply, answer with `message_send(to="human", reply_to=<id>)` before other work, then `ack` it. For other unread messages, call `inbox`, handle them, and `ack` their ids.
 - **For a decision that is the human's,** call `ask_human` with options and your recommendation, then continue with
   other work. The answer arrives as a notice.
 

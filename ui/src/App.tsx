@@ -327,6 +327,7 @@ function TicketCard({ ticket, agents, runs, run, open }: {
 }
 
 type HistoryEvent = { id: number; type: string; actor_type: string; created_ms: number; payload: Record<string, unknown> };
+type Comment = { id: string; from: string; trust: string; body: string; created_ms: number };
 
 function RunsPanel({ project, ticket, run }: {
   project: string; ticket: Ticket; run: (name: string, body: object) => void;
@@ -421,17 +422,24 @@ function WorkflowEditor({ ticket, run }: { ticket: Ticket; run: (name: string, b
   );
 }
 
-function TicketDialog({ project, ticket, onClose, run }: {
-  project: string; ticket: Ticket; onClose: () => void; run: (name: string, body: object) => void;
+function TicketDialog({ project, ticket, tick, onClose, run }: {
+  project: string; ticket: Ticket; tick: number; onClose: () => void; run: (name: string, body: object) => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const [criteria, setCriteria] = useState(ticket.acceptance_criteria.map((c) => c.text).join("\n"));
   const [history, setHistory] = useState<HistoryEvent[]>([]);
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [draft, setDraft] = useState("");
   const now = useNow();
   useEffect(() => {
     ref.current?.showModal();
-    op<{ events: HistoryEvent[] }>(project, "ticket_history", { key: ticket.key }).then((r) => setHistory(r.data.events));
-  }, [project, ticket.key, ticket.version]);
+  }, []);
+  useEffect(() => {
+    op<{ events: HistoryEvent[]; comments: Comment[] }>(project, "ticket_history", { key: ticket.key }).then((r) => {
+      setHistory(r.data.events);
+      setComments(r.data.comments);
+    });
+  }, [project, ticket.key, ticket.version, tick]);
   return (
     <dialog ref={ref} onClose={onClose}
       className="m-auto w-full max-w-2xl rounded-lg border border-border bg-surface p-4 text-text shadow-overlay">
@@ -457,6 +465,27 @@ function TicketDialog({ project, ticket, onClose, run }: {
       })}>Save criteria</button>
       <WorkflowEditor key={JSON.stringify(ticket.workflow)} ticket={ticket} run={run} />
       <RunsPanel project={project} ticket={ticket} run={run} />
+      <section aria-label="Comments" className="mt-4">
+        <h3 className="font-medium">Comments</h3>
+        <ol className="mt-1 max-h-56 space-y-2 overflow-y-auto text-sm">
+          {comments.map((c) => (
+            <li key={c.id} className="rounded-md border border-border p-2">
+              <p className="text-xs text-muted">{c.from}{c.trust === "agent" ? " (agent)" : ""} · {ago(c.created_ms, now)}</p>
+              <p className="whitespace-pre-wrap">{c.body}</p>
+            </li>
+          ))}
+        </ol>
+        {comments.length === 0 && <p className="text-xs text-muted">No comments yet.</p>}
+        <form className="mt-2 flex gap-2" onSubmit={(e) => {
+          e.preventDefault();
+          run("message_send", { to: ticket.key, body: draft });
+          setDraft("");
+        }}>
+          <textarea aria-label={`Comment on ${ticket.key}`} required className={`${field} h-16`} value={draft}
+            placeholder="Comment for the agents on this ticket" onChange={(e) => setDraft(e.target.value)} />
+          <button type="submit" className={secondary}>Post</button>
+        </form>
+      </section>
       <h3 className="mt-4 font-medium">History</h3>
       <ol className="mt-1 max-h-48 space-y-1 overflow-y-auto text-xs text-muted">
         {history.map((event) => (
@@ -470,7 +499,9 @@ function TicketDialog({ project, ticket, onClose, run }: {
   );
 }
 
-function BoardView({ project, board, run }: { project: string; board: Board; run: (name: string, body: object) => void }) {
+function BoardView({ project, board, tick, run }: {
+  project: string; board: Board; tick: number; run: (name: string, body: object) => void;
+}) {
   const [title, setTitle] = useState("");
   const [criteria, setCriteria] = useState("");
   const [openKey, setOpenKey] = useState<string | null>(null);
@@ -516,7 +547,7 @@ function BoardView({ project, board, run }: { project: string; board: Board; run
           );
         })}
       </div>
-      {open && <TicketDialog project={project} ticket={open} onClose={() => setOpenKey(null)} run={run} />}
+      {open && <TicketDialog project={project} ticket={open} tick={tick} onClose={() => setOpenKey(null)} run={run} />}
     </>
   );
 }
@@ -882,7 +913,7 @@ function AgentsView({ project, agents, run }: {
 type Question = { id: string; kind: string; prompt: string; options: string[]; recommendation: string | null;
   answer: string | null; status: string; ticket: string | null; asked_by: string | null; created_ms: number };
 type Message = { id: string; channel: string; ticket: string | null; from: string; trust: string; body: string;
-  requires_response: boolean; created_ms: number; recipients: { to: string; read_ms: number | null }[] };
+  requires_response: boolean; replied: boolean; created_ms: number; recipients: { to: string; read_ms: number | null }[] };
 type Memory = { id: string; kind: string; title: string; body: string; source: string; status: string;
   author: string; ticket: string | null; stale: string[]; created_ms: number };
 type Proposal = { id: string; doc: string; anchor: string; class: string; status: string; content: string };
@@ -977,7 +1008,7 @@ function InboxView({ project, agents, tick, run }: {
               <li key={m.id} className={`rounded-md border p-2 ${unread ? "border-primary" : "border-border"}`}>
                 <p className="text-xs text-muted">
                   {m.from} → {m.recipients.map((r) => `${r.to}${r.read_ms ? " ✓" : ""}`).join(", ")}
-                  {m.ticket && ` · ${m.ticket}`} · {ago(m.created_ms, now)}{m.requires_response && " · needs reply"}
+                  {m.ticket && ` · ${m.ticket}`} · {ago(m.created_ms, now)}{m.requires_response && (m.replied ? " · replied" : m.from === "human" ? " · awaiting reply" : " · needs reply")}
                 </p>
                 <p className="whitespace-pre-wrap">{m.body}</p>
                 {unread && (
@@ -1140,7 +1171,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       {projects.length === 0 && (
         <p className="text-muted">No projects yet. In an agent session, run <code className="font-mono">/my-team:init</code>.</p>
       )}
-      {board && projectId && tab === "board" && <BoardView project={projectId} board={board} run={run} />}
+      {board && projectId && tab === "board" && <BoardView project={projectId} board={board} tick={tick} run={run} />}
       {board && projectId && tab === "backlog" && <BacklogView board={board} run={run} />}
       {board && projectId && tab === "inbox" && <InboxView project={projectId} agents={board.agents} tick={tick} run={run} />}
       {board && projectId && tab === "memory" && <MemoryView project={projectId} tick={tick} run={run} />}

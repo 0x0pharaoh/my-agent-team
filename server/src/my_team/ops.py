@@ -75,7 +75,8 @@ def team_context(ctx: Ctx, inp: TeamContextIn) -> dict:
                          (ctx.session["id"],))
     active = tickets.get(ctx.tx, held, ctx.stall_cutoff) if held else None
     result = {"you": {"agent": ctx.session["agent_name"], "session_id": ctx.session["id"]},
-              "active_ticket": active, "notices": news}
+              "active_ticket": active, "notices": news,
+              "awaiting_reply": messages.awaiting_reply(ctx.tx, ctx.session["agent_id"])}
     if inp.delta:
         return result
     root = Path(ctx.project["root"])
@@ -215,7 +216,8 @@ def ticket_edit(ctx: Ctx, inp: TicketEditIn) -> dict:
 @op("ticket_history", TicketKeyIn, BOTH, "Event history of a ticket.", read_only=True)
 def ticket_history(ctx: Ctx, inp: TicketKeyIn) -> dict:
     ticket = tickets.get(ctx.tx, inp.key, ctx.stall_cutoff)
-    return {"events": events.for_entity(ctx.tx, "ticket", ticket["id"])}
+    return {"events": events.for_entity(ctx.tx, "ticket", ticket["id"]),
+            "comments": messages.thread(ctx.tx, ticket["id"])}
 
 
 class EmptyIn(Input):

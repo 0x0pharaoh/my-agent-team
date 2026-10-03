@@ -9,9 +9,10 @@ from my_team.ids import new_id
 
 ACTIVE = ("queued", "running")
 EXTEND, REASSIGN, CANCEL = "Extend budget x2", "Reassign", "Cancel ticket"
+REPLY_MAX_TOKENS, REPLY_MAX_SECONDS, REPLY_GRACE_MS = 60_000, 300, 30_000
 _SELECT = ("SELECT r.*, t.key AS ticket_key, a.display_name AS agent_name FROM runs r"
            " LEFT JOIN tickets t ON t.id = r.ticket_id JOIN agents a ON a.id = r.agent_id")
-_FIELDS = ("id", "pid", "kind", "step_index", "agent_type", "status", "worktree_path", "branch", "max_tokens", "max_seconds",
+_FIELDS = ("id", "pid", "message_id", "kind", "step_index", "agent_type", "status", "worktree_path", "branch", "max_tokens", "max_seconds",
            "tokens", "cost_usd", "summary", "error", "native_session_id", "session_id", "created_ms", "started_ms",
            "ended_ms")
 
@@ -83,6 +84,34 @@ def schedule(tx: Tx, now: int, agent_types: set[str], limit: int) -> list[dict]:
     return [_queue(tx, ticket, now, SYSTEM) for ticket in candidates]
 
 
+def schedule_replies(tx: Tx, now: int, agent_types: set[str], limit: int) -> list[dict]:
+    """One reply run per seat that has unanswered human messages and no live session to see them."""
+    free = limit - tx.scalar(f"SELECT COUNT(*) FROM runs WHERE status IN {ACTIVE}")
+    if free <= 0 or not agent_types:
+        return []
+    placeholders = ",".join("?" * len(agent_types))
+    seats = tx.all(
+        "SELECT a.id AS agent_id, a.agent_type, MIN(m.id) AS message_id FROM messages m"
+        " JOIN message_recipients r ON r.message_id = m.id AND r.recipient_type = 'agent' AND r.read_ms IS NULL"
+        " JOIN agents a ON a.id = r.recipient_id"
+        f" WHERE m.sender_type = 'human' AND m.requires_response = 1 AND m.created_ms < ? AND a.agent_type IN ({placeholders})"
+        " AND NOT EXISTS (SELECT 1 FROM runs x WHERE x.message_id = m.id)"
+        f" AND NOT EXISTS (SELECT 1 FROM runs x WHERE x.agent_id = a.id AND x.status IN {ACTIVE})"
+        " AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.agent_id = a.id AND s.ended_ms IS NULL"
+        " AND s.last_heartbeat_ms > ?) GROUP BY a.id LIMIT ?",
+        (now - REPLY_GRACE_MS, *sorted(agent_types), now - sessions.OFFLINE_AFTER_MS, free))
+    queued_runs = []
+    for seat in seats:
+        run_id = new_id()
+        tx.execute("INSERT INTO runs (id, kind, agent_id, agent_type, message_id, status, max_tokens, max_seconds,"
+                   " created_ms) VALUES (?, 'reply', ?, ?, ?, 'queued', ?, ?, ?)",
+                   (run_id, seat["agent_id"], seat["agent_type"], seat["message_id"], REPLY_MAX_TOKENS,
+                    REPLY_MAX_SECONDS, now))
+        events.emit(tx, "run.queued", "run", run_id, SYSTEM, {"kind": "reply", "agent_type": seat["agent_type"]}, now)
+        queued_runs.append(get(tx, run_id))
+    return queued_runs
+
+
 def queued(tx: Tx) -> list[dict]:
     return [_serialize(row) for row in tx.all(f"{_SELECT} WHERE r.status = 'queued' ORDER BY r.created_ms")]
 
@@ -111,6 +140,8 @@ def finish(tx: Tx, run_id: str, now: int, status: str, *, summary: str | None = 
     tx.execute("UPDATE runs SET status = ?, summary = ?, error = ?, ended_ms = ? WHERE id = ?",
                (status, (summary or "")[:4000] or None, (error or "")[:2000] or None, now, run_id))
     events.emit(tx, "run.finished", "run", run_id, SYSTEM, {"ticket": run["ticket"], "status": status}, now)
+    if run["kind"] == "reply":
+        return get(tx, run_id)
     key = run["ticket"]
     if status == "budget_exhausted":
         tickets.block(tx, SYSTEM, key, "budget_exhausted", now)

@@ -12,7 +12,8 @@ OPEN_REQUESTS_PER_SENDER = 5
 TICKET_KEY = re.compile(r"^[A-Z][A-Z0-9]{1,9}-\d+$")
 
 _SELECT = (
-    "SELECT m.*, a.display_name AS sender_name, t.key AS ticket_key FROM messages m"
+    "SELECT m.*, a.display_name AS sender_name, t.key AS ticket_key,"
+    " EXISTS (SELECT 1 FROM messages c WHERE c.parent_id = m.id) AS replied FROM messages m"
     " LEFT JOIN agents a ON a.id = m.sender_id LEFT JOIN tickets t ON t.id = m.ticket_id"
 )
 
@@ -63,8 +64,10 @@ def send(tx: Tx, actor: Actor, now: int, *, to: str, body: str, requires_respons
     sender_type, sender_id = _me(actor)
     channel, ticket_id, thread, targets = _recipients(tx, actor, to, reply_to)
     targets = [t for t in dict.fromkeys(targets) if t != (sender_type, sender_id)]
-    if not targets:
+    if not targets and channel != "ticket":  # a ticket comment is kept in its thread even when nobody is notified
         raise Invalid("no_recipients", "Nobody else would receive this message.")
+    # Every agent must answer the human: a direct message from the human always expects a reply.
+    requires_response = requires_response or (actor.kind == "human" and channel == "direct")
     if actor.is_agent and channel == "broadcast" and tx.scalar(
             "SELECT 1 FROM messages WHERE sender_id = ? AND channel = 'broadcast' AND created_ms > ?",
             (sender_id, now - BROADCAST_INTERVAL_MS)):
@@ -90,7 +93,8 @@ def _serialize(row) -> dict:
     return {"id": row["id"], "thread_id": row["thread_id"], "parent_id": row["parent_id"], "channel": row["channel"],
             "ticket": row["ticket_key"], "from": row["sender_name"] or row["sender_type"],
             "trust": "human" if row["sender_type"] == "human" else "agent", "body": row["body"],
-            "requires_response": bool(row["requires_response"]), "created_ms": row["created_ms"]}
+            "requires_response": bool(row["requires_response"]), "created_ms": row["created_ms"],
+            "replied": bool(row["replied"])}
 
 
 def inbox(tx: Tx, actor: Actor, now: int, ack: list[str] | None = None, limit: int = 20) -> dict:
@@ -109,6 +113,18 @@ def inbox(tx: Tx, actor: Actor, now: int, ack: list[str] | None = None, limit: i
 def unread_count(tx: Tx, recipient_type: str, recipient_id: str) -> int:
     return tx.scalar("SELECT COUNT(*) FROM message_recipients WHERE recipient_type = ? AND recipient_id = ?"
                      " AND read_ms IS NULL", (recipient_type, recipient_id))
+
+
+def awaiting_reply(tx: Tx, agent_id: str, limit: int = 3) -> list[dict]:
+    """The human's unanswered messages to this seat, oldest first."""
+    rows = tx.all(f"{_SELECT} JOIN message_recipients r ON r.message_id = m.id AND r.recipient_type = 'agent'"
+                  " WHERE r.recipient_id = ? AND r.read_ms IS NULL AND m.sender_type = 'human' AND m.requires_response = 1"
+                  " ORDER BY m.created_ms LIMIT ?", (agent_id, limit))
+    return [_serialize(row) for row in rows]
+
+
+def thread(tx: Tx, ticket_id: str) -> list[dict]:
+    return [_serialize(row) for row in tx.all(f"{_SELECT} WHERE m.ticket_id = ? ORDER BY m.created_ms", (ticket_id,))]
 
 
 def recent(tx: Tx, limit: int = 200) -> list[dict]:

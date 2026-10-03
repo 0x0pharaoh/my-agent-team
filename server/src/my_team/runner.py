@@ -168,6 +168,14 @@ def brief(ticket: dict, run: dict, worktree: Path, resume: bool = False) -> str:
     )
 
 
+def reply_brief(run: dict) -> str:
+    return (f"You are the my-team agent '{run['agent']}'. The human sent you a message in my-team and is waiting for "
+            "your answer. Call the my-team tool inbox, answer every message from the human with message_send "
+            "(to=\"human\", reply_to=<message id>), then ack them with inbox. Answer from what you know about this "
+            "project; do not edit files, claim tickets or start other work. If a message asks for work, say what "
+            "you would do and that the human can assign it as a ticket.")
+
+
 def _worktree(root: Path, project_id: str, key: str, branch: str) -> Path:
     path = ensure_private_dir(private_data_dir() / "worktrees" / project_id) / key
     if not path.is_dir():
@@ -219,16 +227,17 @@ def launch(state, project: dict, run: dict) -> None:
             raise RuntimeError(f"no runnable {run['agent_type']} CLI on this machine")
         if risky := repo.risky_keys(root):
             raise RuntimeError(f"this repository's git config sets command-running keys: {', '.join(risky)}")
-        worktree = _worktree(root, project["id"], run["ticket"], run["branch"])
-        ticket = db.read_sync(lambda tx: tickets.get(tx, run["ticket"], -1))
-        resume = db.read_sync(lambda tx: runs.resumable(tx, run["id"]))
+        reply = run["kind"] == "reply"
+        worktree = root if reply else _worktree(root, project["id"], run["ticket"], run["branch"])
+        ticket = None if reply else db.read_sync(lambda tx: tickets.get(tx, run["ticket"], -1))
+        resume = None if reply else db.read_sync(lambda tx: runs.resumable(tx, run["id"]))
         native = resume or (str(uuid.uuid4()) if run["agent_type"] == "claude-code" else None)
         mcp_env = {"MY_TEAM_AGENT": run["agent"]}
         mcp_config = _log_path(run["id"]).with_suffix(".mcp.json")
         mcp_config.write_text(json.dumps({"mcpServers": {"my-team": {
             "command": cli_path(), "args": ["mcp"], "env": mcp_env}}}), encoding="utf-8")
-        ctx = {"prompt": brief(ticket, run, worktree, bool(resume)), "cwd": str(worktree), "native": native,
-               "resume": resume, "key": run["ticket"], "mcp_config": str(mcp_config), "mcp_env": mcp_env,
+        ctx = {"prompt": reply_brief(run) if reply else brief(ticket, run, worktree, bool(resume)),
+               "cwd": str(worktree), "native": native, "resume": resume, "key": run["ticket"] or "reply", "mcp_config": str(mcp_config), "mcp_env": mcp_env,
                "my_team_cli": cli_path(), "usage_file": str(mcp_config.with_name(f"{run['id']}.usage.json"))}
         # OpenCode takes its directory from PWD, and its headless MCP client calls itself "cli": set both explicitly.
         env = os.environ | mcp_env | {"MY_TEAM_AGENT_TYPE": run["agent_type"], "PWD": str(worktree)}
@@ -321,6 +330,7 @@ def tick(state) -> None:
         if conf["auto_run"]:
             runnable = {a["agent_type"] for a in agent_clis.detect() if a["installed"]} & DRIVERS.keys()
             db.write_sync(lambda tx: runs.schedule(tx, now_ms(), runnable, conf["max_parallel_runs"]))
+            db.write_sync(lambda tx: runs.schedule_replies(tx, now_ms(), runnable, conf["max_parallel_runs"]))
         for run in db.read_sync(runs.queued):
             launch(state, project, run)
 
