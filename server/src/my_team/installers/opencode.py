@@ -1,10 +1,9 @@
 import json
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
-from my_team import config
+from my_team import agent_clis, config
 from my_team.installers import adapter, cli_path, confirm, copy_skill
 
 PLACEHOLDER = '"__MY_TEAM_CLI__"'
@@ -19,7 +18,7 @@ def config_dir(home: Path) -> Path:
 
 
 def install(yes: bool) -> int:
-    oc = shutil.which("opencode2") or shutil.which("opencode")
+    oc = agent_clis.resolve("opencode")
     if oc is None:
         print("OpenCode V2 not found on PATH")
         return 1

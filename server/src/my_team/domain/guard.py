@@ -5,7 +5,7 @@ from pathlib import Path
 
 from my_team.db.engine import Tx
 
-FREE_PREFIXES = ("docs/", ".my-team/")
+FREE_PREFIXES = ("docs/", ".my-team/", "graphify-out/")
 
 
 def relative(root: Path, path: str) -> str | None:

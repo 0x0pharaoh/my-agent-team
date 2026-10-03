@@ -2,7 +2,7 @@ from my_team import activation
 from my_team.actor import SYSTEM, Actor
 from my_team.db.engine import Tx
 from my_team.domain import events
-from my_team.errors import NotFound
+from my_team.errors import Invalid, NotFound
 from my_team.ids import new_id
 
 HEARTBEAT_INTERVAL_S = 30
@@ -57,8 +57,10 @@ def _free_seat(tx: Tx, agent_type: str, now: int) -> str:
         " AND COALESCE(s.last_heartbeat_ms, s.started_ms) > ?) ORDER BY a.seat_no LIMIT 1",
         (agent_type, now - OFFLINE_AFTER_MS),
     )
-    if row:
-        return row["id"]
+    return row["id"] if row else _new_seat(tx, agent_type, now)
+
+
+def _new_seat(tx: Tx, agent_type: str, now: int) -> str:
     seat_no = tx.scalar("SELECT COALESCE(MAX(seat_no), 0) + 1 FROM agents WHERE agent_type = ?", (agent_type,))
     agent_id = new_id()
     name = agent_type if seat_no == 1 else f"{agent_type}-{seat_no}"
@@ -66,6 +68,28 @@ def _free_seat(tx: Tx, agent_type: str, now: int) -> str:
                (agent_id, name, agent_type, seat_no, now))
     events.emit(tx, "agent.created", "agent", agent_id, SYSTEM, {"name": name, "agent_type": agent_type}, now)
     return agent_id
+
+
+def ensure_seat(tx: Tx, agent_type: str, now: int) -> str:
+    """The type's first seat, created if that agent never connected, so any detected agent can take tickets."""
+    if agent_type not in AGENT_TYPES:
+        raise Invalid("unknown_agent_type", f"Agent type must be one of {', '.join(AGENT_TYPES)}.")
+    row = tx.one("SELECT id FROM agents WHERE agent_type = ? AND archived_ms IS NULL ORDER BY named, seat_no LIMIT 1",
+                 (agent_type,))
+    return row["id"] if row else _new_seat(tx, agent_type, now)
+
+
+def set_lead(tx: Tx, agent_id: str, lead_id: str | None) -> None:
+    seen, cursor = {agent_id}, lead_id
+    while cursor:
+        if cursor in seen:
+            raise Invalid("lead_cycle", "That reporting line would loop back to this agent.")
+        seen.add(cursor)
+        row = tx.one("SELECT lead_id FROM agents WHERE id = ? AND archived_ms IS NULL", (cursor,))
+        if row is None:
+            raise NotFound("unknown_agent", "No such lead agent.")
+        cursor = row["lead_id"]
+    tx.execute("UPDATE agents SET lead_id = ? WHERE id = ?", (lead_id, agent_id))
 
 
 def register(tx: Tx, *, agent_type: str, native_id: str, root_path: str | None, now: int,
@@ -186,5 +210,5 @@ def seats(tx: Tx, now: int, daemon_started_ms: int) -> list[dict]:
             "predecessor_id": row["predecessor_id"], "root_path": row["root_path"],
         })
     return [{"id": a["id"], "display_name": a["display_name"], "agent_type": a["agent_type"], "role": a["role"],
-             "seat_no": a["seat_no"], "named": bool(a["named"]), "sessions": by_agent.get(a["id"], [])}
+             "lead_id": a["lead_id"], "seat_no": a["seat_no"], "named": bool(a["named"]), "sessions": by_agent.get(a["id"], [])}
             for a in agents]

@@ -110,7 +110,8 @@ No industry, geography, or age segmentation is defined. my-team is a developer t
 
 ## Non-goals
 
-- The platform never spawns or drives agents. Assigned work is picked up by a running session.
+- Agents run only as their own CLIs, headlessly, for tickets the human assigned (v0.3 runs, auto-run off by
+  default); the platform never calls a model itself.
 - No live push into running agent sessions in v1.
 - No multi-human sync, LAN access, or cloud service.
 - No embeddings or hosted models. Retrieval is lexical and offline.

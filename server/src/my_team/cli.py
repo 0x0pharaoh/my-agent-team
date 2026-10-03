@@ -183,6 +183,12 @@ def _install(args) -> int:
     return module.install(yes=args.yes)
 
 
+def _graphify(args) -> int:
+    import subprocess
+    print("Installing Graphify (PyPI graphifyy) as a separate uv tool; my-team builds code-only graphs with it.")
+    return subprocess.run(["uv", "tool", "install", "graphifyy"], check=False).returncode
+
+
 def _doctor(args) -> int:
     from my_team.doctor import run
     return run()
@@ -208,6 +214,9 @@ def main(argv=None) -> int:
     commands.add_parser("open", help="open the dashboard").set_defaults(handler=_open)
     commands.add_parser("doctor", help="check the install, data and git").set_defaults(handler=_doctor)
     commands.add_parser("backup", help="back up every database now").set_defaults(handler=_backup)
+    graph = commands.add_parser("graphify", help="code graphs for agent runs")
+    graph.add_argument("action", choices=["install"])
+    graph.set_defaults(handler=_graphify)
     commands.add_parser("setup", help="set the dashboard passphrase (interactive)").set_defaults(handler=_setup)
     commands.add_parser("mcp", help="MCP stdio server for agents").set_defaults(handler=_mcp)
 

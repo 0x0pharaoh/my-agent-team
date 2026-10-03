@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- v0.3 agent runs: auto-detected agent CLIs; assign tickets to any agent type; headless runs per ticket in their
+  own git worktree with token and time budgets (stop and ask on overrun); Claude Code, Codex, OpenCode and Hermes
+  drivers; step pipelines with summary handoff; live ticket comments; every human message gets a reply (reply
+  runs for offline agents); questions routed worker -> lead -> human; Graphify code graphs served to runs.
+
 - WebAuthn passkeys: add/remove in Settings, log in with a security key; passphrase still works.
 - Memory purge (human-only overwrite + vacuum + backup flags) and database restore with integrity,
   schema and trigger checks; purge button and restore section in the dashboard.

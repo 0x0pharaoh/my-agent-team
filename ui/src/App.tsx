@@ -9,16 +9,33 @@ type Ticket = {
   holder: { session_id: string; name: string; last_heartbeat_ms: number | null } | null;
   acceptance_criteria: Criterion[]; pending_pickup: boolean; stalled: boolean; waiting_on: string[];
   changes_requested: boolean; status_reason: string | null; implementation_summary: string | null;
-  human_actions: string[]; sprint_id: string | null;
+  human_actions: string[]; sprint_id: string | null; max_tokens: number | null; max_minutes: number | null;
+  workflow: Step[]; step: number;
 };
 type Sprint = {
   id: string; name: string; goal: string; status: string; start_ms: number | null; end_ms: number | null;
   review_summary: string | null; total: number; done: number;
 };
 type Session = { id: string; status: string; ticket: string | null; last_heartbeat_ms: number | null; last_activity_ms: number };
-type Agent = { id: string; display_name: string; agent_type: string; role: string | null; sessions: Session[] };
+type Agent = {
+  id: string; display_name: string; agent_type: string; role: string | null; lead_id: string | null; sessions: Session[];
+};
+type Settings = { auto_run: boolean; default_max_tokens: number; default_max_minutes: number; max_parallel_runs: number };
+type DetectedAgent = { agent_type: string; installed: boolean; path: string | null; version: string | null };
+const AGENT_TYPES = ["claude-code", "codex", "opencode", "hermes"];
 type Project = { id: string; name: string; key: string; roots: string[] };
-type Board = { tickets: Ticket[]; agents: Agent[]; sprints: Sprint[] };
+type Step = { name: string; agent_type: string; max_tokens?: number; max_minutes?: number };
+type Run = {
+  id: string; ticket: string | null; agent: string; agent_type: string; status: string; tokens: number;
+  max_tokens: number; max_seconds: number; started_ms: number | null; ended_ms: number | null; created_ms: number;
+  summary: string | null; error: string | null; worktree_path: string | null; branch: string | null;
+};
+type Board = { tickets: Ticket[]; agents: Agent[]; sprints: Sprint[]; settings: Settings; runs: Run[] };
+const RUN_ACTIVE = ["queued", "running"];
+
+function thousands(n: number) {
+  return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+}
 type SetupStatus = {
   complete: boolean;
   checklist: {
@@ -256,10 +273,11 @@ function Login({ setupRequired, onDone }: { setupRequired: boolean; onDone: () =
   );
 }
 
-function TicketCard({ ticket, agents, run, open }: {
-  ticket: Ticket; agents: Agent[]; run: (name: string, body: object) => void; open: () => void;
+function TicketCard({ ticket, agents, runs, run, open }: {
+  ticket: Ticket; agents: Agent[]; runs: Run[]; run: (name: string, body: object) => void; open: () => void;
 }) {
   const now = useNow();
+  const active = runs.find((r) => r.ticket === ticket.key);
   return (
     <li className="rounded-md border border-border bg-surface-raised p-2 shadow-card">
       <button className="block w-full text-left" onClick={open}>
@@ -273,6 +291,11 @@ function TicketCard({ ticket, agents, run, open }: {
             {ticket.holder.name} · {ago(ticket.holder.last_heartbeat_ms, now)}
           </Chip>
         )}
+        {active && (
+          <Chip tone="text-primary" icon={<Radio size={12} />}>
+            {active.status === "queued" ? "Run queued" : `Running · ${thousands(active.tokens)}/${thousands(active.max_tokens)} tokens`}
+          </Chip>
+        )}
         {ticket.stalled && <Chip tone="text-danger" icon={<AlertTriangle size={12} />}>Stalled</Chip>}
         {ticket.waiting_on.length > 0 && (
           <Chip tone="text-danger" icon={<Clock size={12} />}>Waiting on {ticket.waiting_on.join(", ")}</Chip>
@@ -282,9 +305,14 @@ function TicketCard({ ticket, agents, run, open }: {
       <div className="mt-2 flex gap-1">
         <select aria-label={`Assign ${ticket.key}`} className={`${field} text-xs`} value={ticket.assignee?.id ?? ""}
           disabled={ticket.status === "done" || ticket.status === "cancelled"}
-          onChange={(e) => run("ticket_assign", { key: ticket.key, agent_id: e.target.value || null, version: ticket.version })}>
+          onChange={(e) => run("ticket_assign", e.target.value.startsWith("type:")
+            ? { key: ticket.key, agent_type: e.target.value.slice(5), version: ticket.version }
+            : { key: ticket.key, agent_id: e.target.value || null, version: ticket.version })}>
           <option value="">Unassigned</option>
           {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.display_name}</option>)}
+          {AGENT_TYPES.filter((type) => !agents.some((agent) => agent.agent_type === type)).map((type) => (
+            <option key={type} value={`type:${type}`}>{type} (new seat)</option>
+          ))}
         </select>
         {ticket.human_actions.length > 0 && (
           <select aria-label={`Change status of ${ticket.key}`} className={`${field} text-xs`} value=""
@@ -299,18 +327,119 @@ function TicketCard({ ticket, agents, run, open }: {
 }
 
 type HistoryEvent = { id: number; type: string; actor_type: string; created_ms: number; payload: Record<string, unknown> };
+type Comment = { id: string; from: string; trust: string; body: string; created_ms: number };
 
-function TicketDialog({ project, ticket, onClose, run }: {
-  project: string; ticket: Ticket; onClose: () => void; run: (name: string, body: object) => void;
+function RunsPanel({ project, ticket, run }: {
+  project: string; ticket: Ticket; run: (name: string, body: object) => void;
+}) {
+  const [runs, setRuns] = useState<Run[]>([]);
+  const [log, setLog] = useState({ text: "", offset: 0, id: "" });
+  const now = useNow(2000);
+  const active = runs.find((r) => RUN_ACTIVE.includes(r.status));
+  const latest = runs[0];
+  useEffect(() => {
+    op<{ runs: Run[] }>(project, "runs_list", { key: ticket.key }).then((r) => setRuns(r.data.runs));
+  }, [project, ticket.key, ticket.version, active ? now : 0]);
+  useEffect(() => {
+    if (!latest) return;
+    const from = log.id === latest.id ? log.offset : 0;
+    op<{ text: string; offset: number }>(project, "run_log", { run_id: latest.id, offset: from }).then((r) =>
+      setLog((prev) => ({ id: latest.id, offset: r.data.offset, text: ((prev.id === latest.id ? prev.text : "") + r.data.text).slice(-20_000) })));
+  }, [project, latest?.id, active ? now : 0]);
+  const budget = (key: "max_tokens" | "max_minutes", label: string, min: number, max: number) => (
+    <label className="flex items-center gap-2 text-sm">
+      {label}
+      <input type="number" min={min} max={max} placeholder="project default" className={`${field} w-36`}
+        defaultValue={ticket[key] ?? ""}
+        onBlur={(e) => e.target.value && Number(e.target.value) !== ticket[key]
+          && run("ticket_edit", { key: ticket.key, version: ticket.version, [key]: Number(e.target.value) })} />
+    </label>
+  );
+  return (
+    <section aria-label="Agent runs" className="mt-4 space-y-2">
+      <header className="flex flex-wrap items-center gap-2">
+        <h3 className="font-medium">Agent runs</h3>
+        {!active && ticket.status === "ready" && ticket.assignee && (
+          <button className={secondary} onClick={() => run("run_start", { key: ticket.key })}>Run now</button>
+        )}
+        {active && <button className={secondary} onClick={() => run("run_stop", { run_id: active.id })}>Stop run</button>}
+      </header>
+      <div className="flex flex-wrap gap-4">
+        {budget("max_tokens", "Max tokens", 1000, 10_000_000)}
+        {budget("max_minutes", "Max minutes", 1, 1440)}
+      </div>
+      <ul className="space-y-1 text-sm">
+        {runs.map((r) => (
+          <li key={r.id}>
+            <span className="font-mono text-xs">{r.status}</span> · {r.agent} · {thousands(r.tokens)}/{thousands(r.max_tokens)} tokens
+            · {r.started_ms ? `${Math.round(((r.ended_ms ?? now) - r.started_ms) / 60_000)}/${r.max_seconds / 60} min` : "not started"}
+            {r.error && <span className="text-danger"> — {r.error}</span>}
+          </li>
+        ))}
+      </ul>
+      {runs.length === 0 && <p className="text-xs text-muted">No runs yet. Assign an agent; with auto-run on, Ready tickets start by themselves.</p>}
+      {latest && log.text && (
+        <pre aria-label="Run log" className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md bg-bg p-2 font-mono text-xs">
+          {log.text}
+        </pre>
+      )}
+    </section>
+  );
+}
+
+function WorkflowEditor({ ticket, run }: { ticket: Ticket; run: (name: string, body: object) => void }) {
+  const [steps, setSteps] = useState<Step[]>(ticket.workflow);
+  const change = (i: number, patch: Partial<Step>) => setSteps(steps.map((step, j) => (j === i ? { ...step, ...patch } : step)));
+  return (
+    <section aria-label="Workflow" className="mt-4 space-y-2">
+      <h3 className="font-medium">
+        Workflow {ticket.workflow.length > 0 && <span className="text-sm text-muted">· step {ticket.step + 1} of {ticket.workflow.length}</span>}
+      </h3>
+      {steps.length === 0 && <p className="text-xs text-muted">Single agent. Add steps (e.g. plan → implement → review) to hand the ticket from agent to agent.</p>}
+      <ol className="space-y-1">
+        {steps.map((step, i) => (
+          <li key={i} className="flex flex-wrap items-center gap-2">
+            <span className="w-5 text-xs text-muted">{i + 1}.</span>
+            <input aria-label={`Step ${i + 1} name`} className={`${field} max-w-40`} value={step.name}
+              onChange={(e) => change(i, { name: e.target.value })} />
+            <select aria-label={`Step ${i + 1} agent`} className={`${field} w-auto`} value={step.agent_type}
+              onChange={(e) => change(i, { agent_type: e.target.value })}>
+              {AGENT_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
+            </select>
+            <button className={secondary} aria-label={`Remove step ${i + 1}`} onClick={() => setSteps(steps.filter((_, j) => j !== i))}>Remove</button>
+          </li>
+        ))}
+      </ol>
+      <div className="flex gap-2">
+        <button className={secondary} disabled={steps.length >= 8}
+          onClick={() => setSteps([...steps, { name: ["plan", "implement", "review", "test"][steps.length] ?? "step", agent_type: "claude-code" }])}>
+          Add step
+        </button>
+        <button className={secondary} disabled={steps.some((step) => !step.name.trim())}
+          onClick={() => run("ticket_workflow", { key: ticket.key, steps })}>Save workflow</button>
+      </div>
+    </section>
+  );
+}
+
+function TicketDialog({ project, ticket, tick, onClose, run }: {
+  project: string; ticket: Ticket; tick: number; onClose: () => void; run: (name: string, body: object) => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const [criteria, setCriteria] = useState(ticket.acceptance_criteria.map((c) => c.text).join("\n"));
   const [history, setHistory] = useState<HistoryEvent[]>([]);
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [draft, setDraft] = useState("");
   const now = useNow();
   useEffect(() => {
     ref.current?.showModal();
-    op<{ events: HistoryEvent[] }>(project, "ticket_history", { key: ticket.key }).then((r) => setHistory(r.data.events));
-  }, [project, ticket.key, ticket.version]);
+  }, []);
+  useEffect(() => {
+    op<{ events: HistoryEvent[]; comments: Comment[] }>(project, "ticket_history", { key: ticket.key }).then((r) => {
+      setHistory(r.data.events);
+      setComments(r.data.comments);
+    });
+  }, [project, ticket.key, ticket.version, tick]);
   return (
     <dialog ref={ref} onClose={onClose}
       className="m-auto w-full max-w-2xl rounded-lg border border-border bg-surface p-4 text-text shadow-overlay">
@@ -334,6 +463,29 @@ function TicketDialog({ project, ticket, onClose, run }: {
         key: ticket.key, version: ticket.version,
         acceptance_criteria: criteria.split("\n").map((text) => text.trim()).filter(Boolean),
       })}>Save criteria</button>
+      <WorkflowEditor key={JSON.stringify(ticket.workflow)} ticket={ticket} run={run} />
+      <RunsPanel project={project} ticket={ticket} run={run} />
+      <section aria-label="Comments" className="mt-4">
+        <h3 className="font-medium">Comments</h3>
+        <ol className="mt-1 max-h-56 space-y-2 overflow-y-auto text-sm">
+          {comments.map((c) => (
+            <li key={c.id} className="rounded-md border border-border p-2">
+              <p className="text-xs text-muted">{c.from}{c.trust === "agent" ? " (agent)" : ""} · {ago(c.created_ms, now)}</p>
+              <p className="whitespace-pre-wrap">{c.body}</p>
+            </li>
+          ))}
+        </ol>
+        {comments.length === 0 && <p className="text-xs text-muted">No comments yet.</p>}
+        <form className="mt-2 flex gap-2" onSubmit={(e) => {
+          e.preventDefault();
+          run("message_send", { to: ticket.key, body: draft });
+          setDraft("");
+        }}>
+          <textarea aria-label={`Comment on ${ticket.key}`} required className={`${field} h-16`} value={draft}
+            placeholder="Comment for the agents on this ticket" onChange={(e) => setDraft(e.target.value)} />
+          <button type="submit" className={secondary}>Post</button>
+        </form>
+      </section>
       <h3 className="mt-4 font-medium">History</h3>
       <ol className="mt-1 max-h-48 space-y-1 overflow-y-auto text-xs text-muted">
         {history.map((event) => (
@@ -347,7 +499,9 @@ function TicketDialog({ project, ticket, onClose, run }: {
   );
 }
 
-function BoardView({ project, board, run }: { project: string; board: Board; run: (name: string, body: object) => void }) {
+function BoardView({ project, board, tick, run }: {
+  project: string; board: Board; tick: number; run: (name: string, body: object) => void;
+}) {
   const [title, setTitle] = useState("");
   const [criteria, setCriteria] = useState("");
   const [openKey, setOpenKey] = useState<string | null>(null);
@@ -385,7 +539,7 @@ function BoardView({ project, board, run }: { project: string; board: Board; run
               <h2 className="mb-2 text-sm font-semibold">{label} <span className="text-muted">{tickets.length}</span></h2>
               <ul className="space-y-2">
                 {tickets.map((ticket) => (
-                  <TicketCard key={ticket.id} ticket={ticket} agents={board.agents} run={run} open={() => setOpenKey(ticket.key)} />
+                  <TicketCard key={ticket.id} ticket={ticket} agents={board.agents} runs={board.runs} run={run} open={() => setOpenKey(ticket.key)} />
                 ))}
               </ul>
               {tickets.length === 0 && <p className="px-1 text-xs text-muted">Nothing here.</p>}
@@ -393,7 +547,7 @@ function BoardView({ project, board, run }: { project: string; board: Board; run
           );
         })}
       </div>
-      {open && <TicketDialog project={project} ticket={open} onClose={() => setOpenKey(null)} run={run} />}
+      {open && <TicketDialog project={project} ticket={open} tick={tick} onClose={() => setOpenKey(null)} run={run} />}
     </>
   );
 }
@@ -617,6 +771,68 @@ const SESSION_TONE: Record<string, [string, ReactNode]> = {
   unknown: ["text-warning", <AlertTriangle size={12} />],
 };
 
+function AutomationSettings({ settings, run }: { settings: Settings; run: (name: string, body: object) => void }) {
+  const number = (key: keyof Settings, label: string, min: number, max: number) => (
+    <label className="flex items-center gap-2 text-sm">
+      {label}
+      <input type="number" min={min} max={max} className={`${field} w-32`} defaultValue={settings[key] as number}
+        onBlur={(e) => Number(e.target.value) !== settings[key] && run("settings_update", { [key]: Number(e.target.value) })} />
+    </label>
+  );
+  return (
+    <section aria-label="Automation" className="mb-6 space-y-2 rounded-lg bg-surface p-3">
+      <h2 className="font-semibold">Automation</h2>
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={settings.auto_run}
+          onChange={(e) => run("settings_update", { auto_run: e.target.checked })} />
+        Start agent runs automatically when a Ready ticket is assigned
+      </label>
+      <p className="text-xs text-muted">
+        Runs use your agents' own accounts and permissions. Only Codex runs inside a sandbox; OpenCode and Hermes
+        runs act with your user rights.
+      </p>
+      <div className="flex flex-wrap gap-4">
+        {number("default_max_tokens", "Default max tokens", 1000, 10_000_000)}
+        {number("default_max_minutes", "Default max minutes", 1, 1440)}
+        {number("max_parallel_runs", "Parallel runs", 1, 16)}
+      </div>
+    </section>
+  );
+}
+
+type Graph = { installed: boolean; built_ms: number | null; nodes: number | null; edges: number | null; building: boolean };
+
+function CodeGraph({ project, tick }: { project: string; tick: number }) {
+  const [graph, setGraph] = useState<Graph | null>(null);
+  const now = useNow(5000);
+  useEffect(() => {
+    op<Graph>(project, "graph_status").then((r) => setGraph(r.data));
+  }, [project, tick, graph?.building ? now : 0]);
+  if (!graph) return null;
+  return (
+    <section aria-label="Code graph" className="mb-6 space-y-2 rounded-lg bg-surface p-3">
+      <h2 className="font-semibold">Code graph (Graphify)</h2>
+      {!graph.installed && (
+        <p className="text-sm text-muted">Not installed. Run <code className="font-mono">my-team graphify install</code> in a terminal.</p>
+      )}
+      {graph.installed && (
+        <p className="text-sm">
+          {graph.building ? "Building…" : graph.built_ms
+            ? `${graph.nodes ?? "?"} nodes · ${graph.edges ?? "?"} edges · built ${ago(graph.built_ms, now)}`
+            : "No graph yet."}
+          <span className="text-muted"> Agent runs (Claude Code, Codex) get it as an MCP server.</span>
+        </p>
+      )}
+      {graph.installed && (
+        <button className={secondary} disabled={graph.building}
+          onClick={() => op<Graph>(project, "graph_build").then((r) => setGraph(r.data))}>
+          {graph.built_ms ? "Rebuild graph" : "Build graph"}
+        </button>
+      )}
+    </section>
+  );
+}
+
 function SettingsView({ project, tick }: { project: string; tick: number }) {
   const [matrix, setMatrix] = useState<Matrix | null>(null);
   useEffect(() => {
@@ -684,14 +900,46 @@ function Restore({ project }: { project: string }) {
   );
 }
 
-function AgentsView({ agents, run }: { agents: Agent[]; run: (name: string, body: object) => void }) {
+function DetectedAgents({ project }: { project: string }) {
+  const [found, setFound] = useState<DetectedAgent[] | null>(null);
+  useEffect(() => {
+    op<{ agents: DetectedAgent[] }>(project, "agents_detect").then((r) => setFound(r.data.agents));
+  }, [project]);
+  return (
+    <section aria-label="Installed agents" className="mb-4">
+      <h2 className="mb-1 font-semibold">Installed agents</h2>
+      {!found && <p className="text-sm text-muted">Looking for agent CLIs…</p>}
+      <ul className="flex flex-wrap gap-2 text-sm">
+        {found?.map((a) => (
+          <li key={a.agent_type}>
+            <Chip tone={a.installed ? "text-success" : "text-muted"}
+              icon={a.installed ? <CheckCircle2 size={12} /> : <CircleDashed size={12} />}>
+              {a.agent_type} · {a.installed ? a.version ?? "installed" : "not found"}
+            </Chip>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function AgentsView({ project, agents, run }: {
+  project: string; agents: Agent[]; run: (name: string, body: object) => void;
+}) {
   const now = useNow();
   if (agents.length === 0) {
-    return <p className="text-muted">No agent has connected yet. Start Claude Code in the project and send a prompt.</p>;
+    return (
+      <>
+        <DetectedAgents project={project} />
+        <p className="text-muted">No seats yet. Assign a ticket to an installed agent, or start one in the project.</p>
+      </>
+    );
   }
   return (
+    <>
+    <DetectedAgents project={project} />
     <table className="w-full text-left text-sm">
-      <thead className="text-muted"><tr><th className="py-1">Seat</th><th>Type</th><th>Role</th><th>Sessions</th></tr></thead>
+      <thead className="text-muted"><tr><th className="py-1">Seat</th><th>Type</th><th>Role</th><th>Reports to</th><th>Sessions</th></tr></thead>
       <tbody>
         {agents.map((agent) => (
           <tr key={agent.id} className="border-t border-border align-top">
@@ -701,8 +949,22 @@ function AgentsView({ agents, run }: { agents: Agent[]; run: (name: string, body
             </td>
             <td className="py-2 font-mono text-xs">{agent.agent_type}</td>
             <td className="py-2">
-              <input aria-label={`Role of ${agent.display_name}`} className={`${field} max-w-48`} defaultValue={agent.role ?? ""}
-                onBlur={(e) => e.target.value !== (agent.role ?? "") && run("agent_update", { agent_id: agent.id, role: e.target.value })} />
+              <select aria-label={`Role of ${agent.display_name}`} className={`${field} max-w-36`} value={agent.role ?? ""}
+                onChange={(e) => run("agent_update", { agent_id: agent.id, role: e.target.value })}>
+                <option value="">No role</option>
+                <option value="lead">Lead</option>
+                <option value="worker">Worker</option>
+                <option value="reviewer">Reviewer</option>
+              </select>
+            </td>
+            <td className="py-2">
+              <select aria-label={`Lead of ${agent.display_name}`} className={`${field} max-w-40`} value={agent.lead_id ?? ""}
+                onChange={(e) => run("agent_update", { agent_id: agent.id, lead_id: e.target.value })}>
+                <option value="">Reports to you</option>
+                {agents.filter((other) => other.id !== agent.id).map((other) => (
+                  <option key={other.id} value={other.id}>{other.display_name}</option>
+                ))}
+              </select>
             </td>
             <td className="space-y-1 py-2">
               {agent.sessions.length === 0 && <span className="text-muted">No sessions in the last day</span>}
@@ -719,13 +981,15 @@ function AgentsView({ agents, run }: { agents: Agent[]; run: (name: string, body
         ))}
       </tbody>
     </table>
+    </>
   );
 }
 
 type Question = { id: string; kind: string; prompt: string; options: string[]; recommendation: string | null;
-  answer: string | null; status: string; ticket: string | null; asked_by: string | null; created_ms: number };
+  answer: string | null; status: string; ticket: string | null; asked_by: string | null; created_ms: number;
+  routed_to: string | null; escalated_ms: number | null };
 type Message = { id: string; channel: string; ticket: string | null; from: string; trust: string; body: string;
-  requires_response: boolean; created_ms: number; recipients: { to: string; read_ms: number | null }[] };
+  requires_response: boolean; replied: boolean; created_ms: number; recipients: { to: string; read_ms: number | null }[] };
 type Memory = { id: string; kind: string; title: string; body: string; source: string; status: string;
   author: string; ticket: string | null; stale: string[]; created_ms: number };
 type Proposal = { id: string; doc: string; anchor: string; class: string; status: string; content: string };
@@ -736,6 +1000,7 @@ function QuestionCard({ question, run }: { question: Question; run: (name: strin
     <li className="rounded-md border border-border bg-surface-raised p-3">
       <p className="text-xs text-muted">
         {question.kind} from {question.asked_by ?? "an agent"}{question.ticket && ` · ${question.ticket}`}
+        {question.routed_to ? ` · with lead ${question.routed_to}` : question.escalated_ms ? " · escalated to you" : ""}
       </p>
       <p className="my-1 whitespace-pre-wrap font-medium">{question.prompt}</p>
       {question.options.length > 0 && (
@@ -820,7 +1085,7 @@ function InboxView({ project, agents, tick, run }: {
               <li key={m.id} className={`rounded-md border p-2 ${unread ? "border-primary" : "border-border"}`}>
                 <p className="text-xs text-muted">
                   {m.from} → {m.recipients.map((r) => `${r.to}${r.read_ms ? " ✓" : ""}`).join(", ")}
-                  {m.ticket && ` · ${m.ticket}`} · {ago(m.created_ms, now)}{m.requires_response && " · needs reply"}
+                  {m.ticket && ` · ${m.ticket}`} · {ago(m.created_ms, now)}{m.requires_response && (m.replied ? " · replied" : m.from === "human" ? " · awaiting reply" : " · needs reply")}
                 </p>
                 <p className="whitespace-pre-wrap">{m.body}</p>
                 {unread && (
@@ -986,14 +1251,20 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       {projects.length === 0 && (
         <p className="text-muted">No projects yet. In an agent session, run <code className="font-mono">/my-team:init</code>.</p>
       )}
-      {board && projectId && tab === "board" && <BoardView project={projectId} board={board} run={run} />}
+      {board && projectId && tab === "board" && <BoardView project={projectId} board={board} tick={tick} run={run} />}
       {board && projectId && tab === "backlog" && <BacklogView board={board} run={run} />}
       {board && projectId && tab === "inbox" && <InboxView project={projectId} agents={board.agents} tick={tick} run={run} />}
       {board && projectId && tab === "memory" && <MemoryView project={projectId} tick={tick} run={run} />}
       {board && projectId && tab === "docs" && <DocsView project={projectId} tick={tick} />}
       {board && projectId && tab === "repo" && <RepoView project={projectId} tick={tick} />}
-      {board && projectId && tab === "agents" && <AgentsView agents={board.agents} run={run} />}
-      {board && projectId && tab === "settings" && <SettingsView project={projectId} tick={tick} />}
+      {board && projectId && tab === "agents" && <AgentsView project={projectId} agents={board.agents} run={run} />}
+      {board && projectId && tab === "settings" && (
+        <>
+          <AutomationSettings key={JSON.stringify(board.settings)} settings={board.settings} run={run} />
+          <CodeGraph project={projectId} tick={tick} />
+          <SettingsView project={projectId} tick={tick} />
+        </>
+      )}
     </div>
   );
 }

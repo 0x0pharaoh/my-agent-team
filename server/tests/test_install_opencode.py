@@ -3,6 +3,7 @@ import os
 import sys
 from pathlib import Path
 
+from my_team import agent_clis
 from my_team.installers import opencode
 
 
@@ -149,7 +150,7 @@ def _which(monkeypatch, mapping):
     def fake(name, *args, **kwargs):
         return mapping.get(name)
 
-    monkeypatch.setattr(opencode.shutil, "which", fake)
+    monkeypatch.setattr(agent_clis.shutil, "which", fake)
 
 
 def _resolved(bindir, name):

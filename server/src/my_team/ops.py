@@ -5,10 +5,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from my_team import auth
+from my_team import agent_clis, auth, graphify, runner
 from my_team.actor import Actor
 from my_team.db.engine import Tx
-from my_team.domain import docs, events, guard, init, memory, messages, notices, projects, questions, repo, sessions, tickets
+from my_team.domain import docs, events, guard, init, memory, messages, notices, projects, questions, repo, runs, sessions, settings, tickets
 from my_team.errors import Conflict
 
 Status = Literal["proposed", "backlog", "ready", "in_progress", "in_review", "blocked", "done", "cancelled"]
@@ -75,7 +75,9 @@ def team_context(ctx: Ctx, inp: TeamContextIn) -> dict:
                          (ctx.session["id"],))
     active = tickets.get(ctx.tx, held, ctx.stall_cutoff) if held else None
     result = {"you": {"agent": ctx.session["agent_name"], "session_id": ctx.session["id"]},
-              "active_ticket": active, "notices": news}
+              "active_ticket": active, "notices": news,
+              "awaiting_reply": messages.awaiting_reply(ctx.tx, ctx.session["agent_id"]),
+              "questions_for_you": questions.routed_to(ctx.tx, ctx.session["agent_id"])}
     if inp.delta:
         return result
     root = Path(ctx.project["root"])
@@ -175,15 +177,20 @@ def ticket_transition(ctx: Ctx, inp: TicketTransitionIn) -> dict:
                                          version=inp.version, reason=inp.reason)}
 
 
+AgentType = Literal["claude-code", "codex", "opencode", "hermes"]
+
+
 class TicketAssignIn(Input):
     key: str
-    agent_id: str | None
+    agent_id: str | None = None
+    agent_type: AgentType | None = Field(None, description="Assign to this agent type's seat, created if needed.")
     version: int | None = None
 
 
-@op("ticket_assign", TicketAssignIn, HUMAN, "Assign or reassign a ticket to an agent seat.")
+@op("ticket_assign", TicketAssignIn, HUMAN, "Assign or reassign a ticket to an agent seat or agent type.")
 def ticket_assign(ctx: Ctx, inp: TicketAssignIn) -> dict:
-    return {"ticket": tickets.assign(ctx.tx, ctx.actor, inp.key, inp.agent_id, ctx.now, ctx.stall_cutoff,
+    agent_id = inp.agent_id or (sessions.ensure_seat(ctx.tx, inp.agent_type, ctx.now) if inp.agent_type else None)
+    return {"ticket": tickets.assign(ctx.tx, ctx.actor, inp.key, agent_id, ctx.now, ctx.stall_cutoff,
                                      version=inp.version)}
 
 
@@ -196,6 +203,8 @@ class TicketEditIn(Input):
     type: Literal["feature", "bug", "chore", "docs", "spike"] | None = None
     acceptance_criteria: list[dict | str] | None = None
     sprint_id: str | None = Field(None, description='Sprint to move the ticket into; "" moves it to the backlog.')
+    max_tokens: int | None = Field(None, ge=1_000, le=10_000_000, description="Token budget for agent runs.")
+    max_minutes: int | None = Field(None, ge=1, le=24 * 60, description="Time budget for agent runs.")
 
 
 @op("ticket_edit", TicketEditIn, HUMAN, "Edit ticket fields.")
@@ -208,7 +217,8 @@ def ticket_edit(ctx: Ctx, inp: TicketEditIn) -> dict:
 @op("ticket_history", TicketKeyIn, BOTH, "Event history of a ticket.", read_only=True)
 def ticket_history(ctx: Ctx, inp: TicketKeyIn) -> dict:
     ticket = tickets.get(ctx.tx, inp.key, ctx.stall_cutoff)
-    return {"events": events.for_entity(ctx.tx, "ticket", ticket["id"])}
+    return {"events": events.for_entity(ctx.tx, "ticket", ticket["id"]),
+            "comments": messages.thread(ctx.tx, ticket["id"])}
 
 
 class EmptyIn(Input):
@@ -218,7 +228,94 @@ class EmptyIn(Input):
 @op("board", EmptyIn, HUMAN, "Snapshot of tickets and agent seats for the dashboard.", read_only=True)
 def board(ctx: Ctx, inp: EmptyIn) -> dict:
     return {"tickets": tickets.find(ctx.tx, ctx.stall_cutoff, limit=1000),
-            "agents": sessions.seats(ctx.tx, ctx.now, ctx.daemon_started_ms), "sprints": tickets.sprints(ctx.tx)}
+            "agents": sessions.seats(ctx.tx, ctx.now, ctx.daemon_started_ms), "settings": settings.get(ctx.tx),
+            "sprints": tickets.sprints(ctx.tx), "runs": runs.listing(ctx.tx, active_only=True)}
+
+
+@op("agents_detect", EmptyIn, HUMAN, "Agent CLIs installed on this machine.", read_only=True, db=False)
+def agents_detect(ctx: Ctx, inp: EmptyIn) -> dict:
+    return {"agents": agent_clis.detect()}
+
+
+class SettingsIn(Input):
+    auto_run: bool | None = Field(None, description="Start agent runs automatically when a Ready ticket is assigned.")
+    default_max_tokens: int | None = Field(None, ge=1_000, le=10_000_000)
+    default_max_minutes: int | None = Field(None, ge=1, le=24 * 60)
+    max_parallel_runs: int | None = Field(None, ge=1, le=16)
+
+
+@op("settings_update", SettingsIn, HUMAN, "Change project automation settings.")
+def settings_update(ctx: Ctx, inp: SettingsIn) -> dict:
+    return {"settings": settings.update(ctx.tx, ctx.actor, ctx.now, inp.model_dump(exclude_none=True))}
+
+
+class StepIn(Input):
+    name: str = Field(..., min_length=1, max_length=40)
+    agent_type: AgentType
+    max_tokens: int | None = Field(None, ge=1_000, le=10_000_000)
+    max_minutes: int | None = Field(None, ge=1, le=24 * 60)
+
+
+class WorkflowIn(Input):
+    key: str
+    steps: list[StepIn] = Field(default_factory=list, max_length=8)
+
+
+@op("ticket_workflow", WorkflowIn, HUMAN, "Set a ticket's step pipeline (e.g. plan -> implement -> review).")
+def ticket_workflow(ctx: Ctx, inp: WorkflowIn) -> dict:
+    steps = [step.model_dump(exclude_none=True) for step in inp.steps]
+    return {"ticket": runs.set_workflow(ctx.tx, ctx.actor, inp.key, steps, ctx.now, ctx.stall_cutoff)}
+
+
+class RunKeyIn(Input):
+    key: str
+
+
+@op("run_start", RunKeyIn, HUMAN, "Start an agent run for a Ready, assigned ticket now.")
+def run_start(ctx: Ctx, inp: RunKeyIn) -> dict:
+    return {"run": runs.start(ctx.tx, ctx.actor, inp.key, ctx.now)}
+
+
+class RunIdIn(Input):
+    run_id: str = Field(..., pattern=r"^[0-9A-HJKMNP-TV-Z]{26}$")
+
+
+@op("run_stop", RunIdIn, HUMAN, "Stop an agent run; its ticket is blocked for your review.")
+def run_stop(ctx: Ctx, inp: RunIdIn) -> dict:
+    if not runner.stop(inp.run_id):
+        runs.finish(ctx.tx, inp.run_id, ctx.now, "stopped", error="stopped by the human")
+    return {"run": runs.get(ctx.tx, inp.run_id)}
+
+
+class RunsListIn(Input):
+    key: str | None = None
+
+
+@op("runs_list", RunsListIn, HUMAN, "Agent runs, newest first, optionally for one ticket.", read_only=True)
+def runs_list(ctx: Ctx, inp: RunsListIn) -> dict:
+    return {"runs": runs.listing(ctx.tx, inp.key)}
+
+
+class RunLogIn(RunIdIn):
+    offset: int = Field(0, ge=0)
+
+
+@op("run_log", RunLogIn, HUMAN, "Raw output of an agent run from an offset.", read_only=True, db=False)
+def run_log(ctx: Ctx, inp: RunLogIn) -> dict:
+    return runner.read_log(inp.run_id, inp.offset)
+
+
+@op("graph_status", EmptyIn, HUMAN, "The project's Graphify code graph: installed, built, size.", read_only=True,
+    db=False)
+def graph_status(ctx: Ctx, inp: EmptyIn) -> dict:
+    return graphify.status(Path(ctx.project["root"]))
+
+
+@op("graph_build", EmptyIn, HUMAN, "Build the project's code graph (code-only, no API key) in the background.",
+    db=False)
+def graph_build(ctx: Ctx, inp: EmptyIn) -> dict:
+    root = Path(ctx.project["root"])
+    return {"started": graphify.build_in_background(root)} | graphify.status(root)
 
 
 @op("repo_status", EmptyIn, HUMAN, "Local and remote state of the project's git repository.", read_only=True,
@@ -312,17 +409,20 @@ def sprint_transition(ctx: Ctx, inp: SprintTransitionIn) -> dict:
 class AgentUpdateIn(Input):
     agent_id: str
     display_name: str | None = Field(None, min_length=1, max_length=40)
-    role: str | None = Field(None, max_length=80)
+    role: Literal["lead", "worker", "reviewer", ""] | None = None
+    lead_id: str | None = Field(None, description='Seat this agent reports to; "" removes the lead.')
 
 
-@op("agent_update", AgentUpdateIn, HUMAN, "Rename an agent seat or set its role.")
+@op("agent_update", AgentUpdateIn, HUMAN, "Rename an agent seat, set its role, or set who it reports to.")
 def agent_update(ctx: Ctx, inp: AgentUpdateIn) -> dict:
     if inp.display_name:
         ctx.tx.execute("UPDATE agents SET display_name = ? WHERE id = ?", (inp.display_name, inp.agent_id))
     if inp.role is not None:
         ctx.tx.execute("UPDATE agents SET role = ? WHERE id = ?", (inp.role or None, inp.agent_id))
+    if inp.lead_id is not None:
+        sessions.set_lead(ctx.tx, inp.agent_id, inp.lead_id or None)
     events.emit(ctx.tx, "agent.updated", "agent", inp.agent_id, ctx.actor,
-                {"display_name": inp.display_name, "role": inp.role}, ctx.now)
+                {"display_name": inp.display_name, "role": inp.role, "lead_id": inp.lead_id}, ctx.now)
     return {"agents": sessions.seats(ctx.tx, ctx.now, ctx.daemon_started_ms)}
 
 
@@ -447,11 +547,37 @@ class AskHumanIn(Input):
     ticket: str | None = None
 
 
-@op("ask_human", AskHumanIn, AGENT, "Ask the human a question or for a decision; it appears in their dashboard "
-    "Inbox and the answer arrives as a notice.", tool=True)
-def ask_human(ctx: Ctx, inp: AskHumanIn) -> dict:
+def ask(ctx: Ctx, inp: AskHumanIn) -> dict:
     return {"question": questions.ask(ctx.tx, ctx.actor, ctx.now, kind=inp.kind, prompt=inp.prompt,
-                                      options=inp.options, recommendation=inp.recommendation, ticket=inp.ticket)}
+                                      options=inp.options, recommendation=inp.recommendation, ticket=inp.ticket,
+                                      route=True)}
+
+
+_ASK = ("Ask a question or for a decision. A question goes to your lead first if you report to one; decisions "
+        "and questions without a lead go to the human's Inbox. The answer arrives as a notice.")
+op("ask", AskHumanIn, AGENT, _ASK, tool=True)(ask)
+op("ask_human", AskHumanIn, AGENT, _ASK, tool=True)(ask)
+
+
+class QuestionReplyIn(Input):
+    id: str
+    answer: str = Field(..., max_length=4000)
+
+
+@op("question_reply", QuestionReplyIn, AGENT, "As a lead, answer a question one of your workers routed to you.",
+    tool=True)
+def question_reply(ctx: Ctx, inp: QuestionReplyIn) -> dict:
+    return {"question": questions.reply(ctx.tx, ctx.actor, ctx.now, inp.id, inp.answer)}
+
+
+class QuestionIdIn(Input):
+    id: str
+
+
+@op("question_escalate", QuestionIdIn, AGENT, "As a lead, pass a question routed to you up to the human.",
+    tool=True)
+def question_escalate(ctx: Ctx, inp: QuestionIdIn) -> dict:
+    return {"question": questions.escalate(ctx.tx, ctx.actor, ctx.now, inp.id)}
 
 
 class QuestionAnswerIn(Input):
@@ -462,7 +588,9 @@ class QuestionAnswerIn(Input):
 
 @op("question_answer", QuestionAnswerIn, HUMAN, "Answer or reject an agent's question.")
 def question_answer(ctx: Ctx, inp: QuestionAnswerIn) -> dict:
-    return {"question": questions.answer(ctx.tx, ctx.actor, ctx.now, inp.id, inp.answer, inp.reject)}
+    answered = questions.answer(ctx.tx, ctx.actor, ctx.now, inp.id, inp.answer, inp.reject)
+    runs.on_answer(ctx.tx, ctx.actor, inp.id, inp.answer, ctx.now, ctx.stall_cutoff)
+    return {"question": answered}
 
 
 class QuestionsListIn(Input):

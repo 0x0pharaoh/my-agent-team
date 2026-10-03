@@ -15,6 +15,14 @@ def render_context(data: dict, resolved: dict, full: bool) -> str:
     for stop in data["notices"]["stop"]:
         lines.append(f"STOP: {stop['ticket']} was taken off this session by the human ({stop['reason']}). Stop editing "
                      "it, do not commit, and post one ticket note saying where you left off.")
+    for message in data.get("awaiting_reply") or []:
+        lines.append(f"The human is waiting for your reply to message {message['id']}: "
+                     f"{json.dumps(_short(message['body'], 300))}. Answer it first with message_send(to=\"human\", "
+                     f"reply_to=\"{message['id']}\"), then ack it with inbox.")
+    for question in data.get("questions_for_you") or []:
+        lines.append(f"Your worker {question['asked_by']} asks (question {question['id']}): "
+                     f"{json.dumps(_short(question['prompt'], 300))}. Answer with question_reply, or pass it to the "
+                     "human with question_escalate.")
     active = data.get("active_ticket")
     if active:
         lines.append(f"Active ticket: {active['key']} \"{_short(active['title'], 200)}\" · epoch {active['claim_epoch']} · "
