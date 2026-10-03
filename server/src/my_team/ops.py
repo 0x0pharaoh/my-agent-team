@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from my_team import agent_clis, auth, runner
+from my_team import agent_clis, auth, graphify, runner
 from my_team.actor import Actor
 from my_team.db.engine import Tx
 from my_team.domain import docs, events, guard, init, memory, messages, notices, projects, questions, repo, runs, sessions, settings, tickets
@@ -303,6 +303,19 @@ class RunLogIn(RunIdIn):
 @op("run_log", RunLogIn, HUMAN, "Raw output of an agent run from an offset.", read_only=True, db=False)
 def run_log(ctx: Ctx, inp: RunLogIn) -> dict:
     return runner.read_log(inp.run_id, inp.offset)
+
+
+@op("graph_status", EmptyIn, HUMAN, "The project's Graphify code graph: installed, built, size.", read_only=True,
+    db=False)
+def graph_status(ctx: Ctx, inp: EmptyIn) -> dict:
+    return graphify.status(Path(ctx.project["root"]))
+
+
+@op("graph_build", EmptyIn, HUMAN, "Build the project's code graph (code-only, no API key) in the background.",
+    db=False)
+def graph_build(ctx: Ctx, inp: EmptyIn) -> dict:
+    root = Path(ctx.project["root"])
+    return {"started": graphify.build_in_background(root)} | graphify.status(root)
 
 
 @op("repo_status", EmptyIn, HUMAN, "Local and remote state of the project's git repository.", read_only=True,

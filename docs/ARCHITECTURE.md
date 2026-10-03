@@ -83,6 +83,27 @@ starts the assigned agent's CLI headlessly for a Ready ticket:
 4. On exit the ticket must be in review; anything else (failure, human stop, no review) blocks it with the reason.
 The scheduler ticks every 2 s, respects `max_parallel_runs`, and fails runs a previous daemon left active.
 
+Drivers: Claude Code (`claude -p --output-format stream-json`, tokens from message usage), Codex
+(`codex exec --json -s workspace-write`, tokens from turn usage), OpenCode (`opencode run --format json
+--standalone --auto`, tokens polled from OpenCode's own database; needs `my-team install opencode` for its MCP
+entry), Hermes (`hermes -z --usage-file`, time enforced live, tokens read after exit). Runs get
+`MY_TEAM_AGENT`, `MY_TEAM_AGENT_TYPE` and `PWD=<worktree>` so hooks and shims bind the assigned seat.
+
+**Pipelines.** A ticket's `workflow` lists steps (name, agent type, optional budget). A step that ends with the
+ticket in review hands it, Ready, to the next step's seat with the summary in its brief; after the last step it
+stays in review for the human. Extending a budget resumes the same agent session where the CLI supports it.
+
+**Conversation.** Ticket comments are ticket-thread messages from the human or any agent, shown live in the ticket
+dialog. A direct message from the human always needs a reply: it leads the recipient's context until answered,
+and with auto-run on a seat with no live session gets a short reply run (60k tokens / 5 min, project root, no
+claims). Questions route worker -> lead -> human: `ask` sends a plain question to the asker's lead, decisions go to
+the human, and a lead answers (`question_reply`) or escalates (`question_escalate`); an offline lead gets a reply
+run and anything left unanswered escalates.
+
+**Code graph.** `my-team graphify install` (human) installs Graphify as its own uv tool. `graph_build` runs
+`graphify extract <root> --code-only` (no API key) into `graphify-out/` (added to `.git/info/exclude`); ticket runs
+refresh it with `graphify update` and Claude/Codex runs get it as an MCP server (`python -m graphify.serve`).
+
 ## Technology Stack
 
 | Layer | Technology | Purpose |

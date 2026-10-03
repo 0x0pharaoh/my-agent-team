@@ -800,6 +800,39 @@ function AutomationSettings({ settings, run }: { settings: Settings; run: (name:
   );
 }
 
+type Graph = { installed: boolean; built_ms: number | null; nodes: number | null; edges: number | null; building: boolean };
+
+function CodeGraph({ project, tick }: { project: string; tick: number }) {
+  const [graph, setGraph] = useState<Graph | null>(null);
+  const now = useNow(5000);
+  useEffect(() => {
+    op<Graph>(project, "graph_status").then((r) => setGraph(r.data));
+  }, [project, tick, graph?.building ? now : 0]);
+  if (!graph) return null;
+  return (
+    <section aria-label="Code graph" className="mb-6 space-y-2 rounded-lg bg-surface p-3">
+      <h2 className="font-semibold">Code graph (Graphify)</h2>
+      {!graph.installed && (
+        <p className="text-sm text-muted">Not installed. Run <code className="font-mono">my-team graphify install</code> in a terminal.</p>
+      )}
+      {graph.installed && (
+        <p className="text-sm">
+          {graph.building ? "Building…" : graph.built_ms
+            ? `${graph.nodes ?? "?"} nodes · ${graph.edges ?? "?"} edges · built ${ago(graph.built_ms, now)}`
+            : "No graph yet."}
+          <span className="text-muted"> Agent runs (Claude Code, Codex) get it as an MCP server.</span>
+        </p>
+      )}
+      {graph.installed && (
+        <button className={secondary} disabled={graph.building}
+          onClick={() => op<Graph>(project, "graph_build").then((r) => setGraph(r.data))}>
+          {graph.built_ms ? "Rebuild graph" : "Build graph"}
+        </button>
+      )}
+    </section>
+  );
+}
+
 function SettingsView({ project, tick }: { project: string; tick: number }) {
   const [matrix, setMatrix] = useState<Matrix | null>(null);
   useEffect(() => {
@@ -1183,6 +1216,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       {board && projectId && tab === "settings" && (
         <>
           <AutomationSettings key={JSON.stringify(board.settings)} settings={board.settings} run={run} />
+          <CodeGraph project={projectId} tick={tick} />
           <SettingsView project={projectId} tick={tick} />
         </>
       )}

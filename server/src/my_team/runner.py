@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from my_team import activation, agent_clis, git
+from my_team import activation, agent_clis, git, graphify
 from my_team.clock import now_ms
 from my_team.domain import projects, repo, runs, settings, tickets
 from my_team.installers import cli_path
@@ -64,7 +64,15 @@ def _codex_argv(cli: str, ctx: dict) -> list[str]:
     env = ", ".join(f'{key} = "{value}"' for key, value in ctx["mcp_env"].items())
     return [cli, "exec", "--json", "-C", ctx["cwd"], "-s", "workspace-write", "--skip-git-repo-check",
             "-c", f"mcp_servers.my-team.command='{ctx['my_team_cli']}'", "-c", 'mcp_servers.my-team.args=["mcp"]',
-            "-c", f"mcp_servers.my-team.env={{{env}}}", ctx["prompt"]]
+            "-c", f"mcp_servers.my-team.env={{{env}}}", *_codex_graph(ctx), ctx["prompt"]]
+
+
+def _codex_graph(ctx: dict) -> list[str]:
+    graph = ctx.get("graph")
+    if not graph:
+        return []
+    args = ", ".join(f"'{arg}'" for arg in graph["args"])
+    return ["-c", f"mcp_servers.graphify.command='{graph['command']}'", "-c", f"mcp_servers.graphify.args=[{args}]"]
 
 
 def _codex_parse(event: dict, acc: dict) -> None:
@@ -245,11 +253,15 @@ def launch(state, project: dict, run: dict) -> None:
         native = resume or (str(uuid.uuid4()) if run["agent_type"] == "claude-code" else None)
         mcp_env = {"MY_TEAM_AGENT": run["agent"]}
         mcp_config = _log_path(run["id"]).with_suffix(".mcp.json")
-        mcp_config.write_text(json.dumps({"mcpServers": {"my-team": {
-            "command": cli_path(), "args": ["mcp"], "env": mcp_env}}}), encoding="utf-8")
+        if not reply and graphify.graph_path(root).is_file():
+            graphify.build(root, update=True)  # incremental; keeps the graph close to the branch the run starts from
+        graph = graphify.mcp_server(root)
+        servers = {"my-team": {"command": cli_path(), "args": ["mcp"], "env": mcp_env}} | ({"graphify": graph} if graph else {})
+        mcp_config.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
         ctx = {"prompt": reply_brief(run) if reply else brief(ticket, run, worktree, bool(resume)),
                "cwd": str(worktree), "native": native, "resume": resume, "key": run["ticket"] or "reply", "mcp_config": str(mcp_config), "mcp_env": mcp_env,
-               "my_team_cli": cli_path(), "usage_file": str(mcp_config.with_name(f"{run['id']}.usage.json"))}
+               "my_team_cli": cli_path(), "usage_file": str(mcp_config.with_name(f"{run['id']}.usage.json")),
+               "graph": graph}
         # OpenCode takes its directory from PWD, and its headless MCP client calls itself "cli": set both explicitly.
         env = os.environ | mcp_env | {"MY_TEAM_AGENT_TYPE": run["agent_type"], "PWD": str(worktree)}
         proc = subprocess.Popen(DRIVERS[run["agent_type"]].argv(cli, ctx), cwd=worktree,
