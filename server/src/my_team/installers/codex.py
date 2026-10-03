@@ -1,0 +1,92 @@
+import json
+import os
+import shlex
+import subprocess
+from pathlib import Path
+
+from my_team import config
+from my_team.installers import cli_path, confirm, copy_skill
+
+
+def codex_home() -> Path:
+    home = Path(os.environ.get("HOME") or Path.home())
+    return Path(os.environ.get("CODEX_HOME") or home / ".codex")
+
+
+def install(yes: bool = False) -> int:
+    home = Path(os.environ.get("HOME") or Path.home())
+    chome = codex_home()
+    cli = str(Path(cli_path()).resolve())
+    plan = [
+        f"copy my-team skill to {home / '.agents' / 'skills' / 'my-team'}",
+        "add Codex MCP server my-team if missing",
+        f"merge my-team hooks into {chome / 'hooks.json'}",
+        "let the my-team daemon start on demand (no OS service)",
+    ]
+    deny = os.environ.get("MY_TEAM_CODEX_DENY_UNCLAIMED") == "1"
+    if deny:
+        plan.append("add PreToolUse hook blocking unclaimed apply_patch edits")
+    if not confirm(plan, yes):
+        return 1
+    copy_skill(home / ".agents" / "skills" / "my-team")
+    _add_mcp(cli)
+    _write_hooks(chome, cli, deny=deny)
+    config.save(autostart=True)
+    print("\nDone. Trust the my-team hooks once in Codex's /hooks screen, then run $my-team init in a project.")
+    return 0
+
+
+def _add_mcp(cli: str) -> None:
+    found = _run(["codex", "mcp", "get", "my-team"], capture_output=True, text=True, check=False)
+    if found.returncode == 0:
+        return
+    _run(["codex", "mcp", "add", "my-team", "--", cli, "mcp"], check=False)
+
+
+def _run(args: list[str], **kwargs):
+    check = kwargs.pop("check", False)
+    return subprocess.run(args, check=check, **kwargs)
+
+
+def _write_hooks(codex_home: Path, cli: str, deny: bool = False) -> None:
+    hooks_path = codex_home / "hooks.json"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    data = _read_hooks(hooks_path)
+    hooks = data.setdefault("hooks", {})
+    for event in ("SessionStart", "UserPromptSubmit", "PreToolUse"):
+        kept = [entry for entry in hooks.get(event, []) if not _ours(entry)]
+        if kept:
+            hooks[event] = kept
+        else:
+            hooks.pop(event, None)
+    hooks.setdefault("SessionStart", []).append(
+        {"matcher": "startup|resume|clear|compact", "hooks": [_command(cli, "session-start")]})
+    hooks.setdefault("UserPromptSubmit", []).append({"hooks": [_command(cli, "prompt")]})
+    if deny:
+        hooks.setdefault("PreToolUse", []).append(
+            {"matcher": "apply_patch|Edit|Write", "hooks": [_command(cli, "pre-edit")]})
+    hooks_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _command(cli: str, event: str) -> dict:
+    """Codex runs command as a shell string (commandWindows on Windows); there is no exec-form args field."""
+    tail = f"hook {event} --agent codex"
+    windows = f"& '{cli}' {tail}" if " " in cli else f"{cli} {tail}"
+    return {"type": "command", "command": f"{shlex.quote(cli)} {tail}", "commandWindows": windows,
+            "timeout": 20}
+
+
+def _read_hooks(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"hooks": {}}
+    return data if isinstance(data.get("hooks"), dict) else {"hooks": {}}
+
+
+def _ours(entry) -> bool:
+    handlers = entry.get("hooks", []) if isinstance(entry, dict) else []
+    return bool(handlers) and all(
+        "--agent codex" in " ".join([str(h.get("command", "")), *map(str, h.get("args", []))])
+        or (h.get("type") == "mcp_tool" and h.get("server") == "my-team")
+        for h in handlers)
