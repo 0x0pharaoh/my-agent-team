@@ -143,6 +143,9 @@ def finish(tx: Tx, run_id: str, now: int, status: str, *, summary: str | None = 
     if run["kind"] == "reply":
         return get(tx, run_id)
     key = run["ticket"]
+    ticket = tx.one("SELECT * FROM tickets WHERE key = ?", (key,))
+    if status == "budget_exhausted" and ticket["status"] == "in_review":
+        status = "succeeded"  # the agent finished its step before the meter tipped over; don't ask about it
     if status == "budget_exhausted":
         tickets.block(tx, SYSTEM, key, "budget_exhausted", now)
         elapsed = (now - (run["started_ms"] or now)) // 60_000
@@ -155,7 +158,6 @@ def finish(tx: Tx, run_id: str, now: int, status: str, *, summary: str | None = 
     elif status != "succeeded":
         tickets.block(tx, SYSTEM, key, f"run {status}: {(error or summary or '')[:200]}".rstrip(": "), now)
     else:
-        ticket = tx.one("SELECT * FROM tickets WHERE key = ?", (key,))
         steps = json.loads(ticket["workflow"])
         if ticket["status"] == "in_review" and ticket["step"] + 1 < len(steps):
             _next_step(tx, ticket, steps, summary, now)

@@ -18,6 +18,7 @@ from my_team import activation, agent_clis, git
 from my_team.clock import now_ms
 from my_team.domain import projects, repo, runs, settings, tickets
 from my_team.installers import cli_path
+from my_team.installers.opencode import config_dir as opencode_config_dir
 from my_team.paths import ensure_private_dir, private_data_dir
 
 log = logging.getLogger("my_team.runner")
@@ -113,6 +114,13 @@ def _opencode_poll(acc: dict) -> None:
     acc["tokens"], acc["cost"] = tokens, cost
 
 
+def _opencode_has_my_team() -> bool:
+    """`opencode run` takes no MCP config flag, so runs rely on the global entry `my-team install opencode` writes."""
+    folder = opencode_config_dir(Path.home())
+    return any('"my-team"' in path.read_text(encoding="utf-8", errors="replace")
+               for path in (folder / "opencode.jsonc", folder / "opencode.json") if path.is_file())
+
+
 def _hermes_argv(cli: str, ctx: dict) -> list[str]:
     resume = ["--resume", ctx["resume"]] if ctx.get("resume") else []
     return [cli, "-z", ctx["prompt"], "--in", ctx["cwd"], "--usage-file", ctx["usage_file"], "--yolo",
@@ -143,7 +151,7 @@ def brief(ticket: dict, run: dict, worktree: Path, resume: bool = False) -> str:
     criteria = "\n".join(f"- {c['text']}" for c in ticket["acceptance_criteria"])
     steps, step = ticket["workflow"], ticket["step"]
     pipeline = ""
-    if steps:
+    if step < len(steps):
         pipeline = (f"This ticket runs as a pipeline: {' -> '.join(s['name'] for s in steps)}. You are step {step + 1} "
                     f"of {len(steps)} ({steps[step]['name']}): do only that part, then move the ticket to review; the "
                     "next step starts automatically with your summary.\n")
@@ -225,6 +233,8 @@ def launch(state, project: dict, run: dict) -> None:
         cli = agent_clis.resolve(run["agent_type"])
         if not cli or run["agent_type"] not in DRIVERS:
             raise RuntimeError(f"no runnable {run['agent_type']} CLI on this machine")
+        if run["agent_type"] == "opencode" and not _opencode_has_my_team():
+            raise RuntimeError("OpenCode has no my-team MCP server; run `my-team install opencode` first")
         if risky := repo.risky_keys(root):
             raise RuntimeError(f"this repository's git config sets command-running keys: {', '.join(risky)}")
         reply = run["kind"] == "reply"
@@ -292,6 +302,7 @@ def _pump(db, run: dict, proc: subprocess.Popen, ctx: dict) -> None:
         return runs.finish(tx, run["id"], now_ms(), status, summary=acc["text"],
                            error=None if code == 0 else f"exit code {code}")
     db.write_sync(done)
+    THREADS.pop(run["id"], None)
 
 
 def stop(run_id: str, status: str = "stopped") -> bool:
@@ -331,6 +342,7 @@ def tick(state) -> None:
             runnable = {a["agent_type"] for a in agent_clis.detect() if a["installed"]} & DRIVERS.keys()
             db.write_sync(lambda tx: runs.schedule(tx, now_ms(), runnable, conf["max_parallel_runs"]))
             db.write_sync(lambda tx: runs.schedule_replies(tx, now_ms(), runnable, conf["max_parallel_runs"]))
+        # ponytail: launches run inline, so a slow `git worktree add` (120 s cap) delays the tick; thread them if seen.
         for run in db.read_sync(runs.queued):
             launch(state, project, run)
 

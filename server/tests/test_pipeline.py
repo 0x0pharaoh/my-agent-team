@@ -121,3 +121,29 @@ def test_hermes_usage_file_after_the_run(tmp_path):
     assert (acc["tokens"], acc["cost"], acc["native"]) == (400, 0.02, "h-1")
     argv = runner._hermes_argv("hermes", {"prompt": "p", "cwd": "w", "usage_file": str(usage), "resume": "h-1"})
     assert argv[:2] == ["hermes", "-z"] and argv[-2:] == ["--resume", "h-1"]
+
+
+async def test_budget_hit_after_the_step_reached_review_still_hands_over(state, human, agent, launched):
+    ticket = (await human.op("ticket_create", {"title": "Two steps", "status": "ready",
+                                               "acceptance_criteria": ["done"]}))["data"]["ticket"]
+    await human.op("ticket_workflow", {"key": ticket["key"], "steps": [{"name": "plan", "agent_type": "claude-code"},
+                                                                       {"name": "build", "agent_type": "claude-code"}]})
+    db = state.project_db(human.project_id)
+    run = db.write_sync(lambda tx: runs.start(tx, runs.SYSTEM, ticket["key"], 1))
+    await review(agent, ticket["key"], "Planned.")
+    db.write_sync(lambda tx: runs.finish(tx, run["id"], 2, "budget_exhausted"))
+    after = (await human.op("ticket_find", {"key": ticket["key"]}))["data"]["tickets"][0]
+    assert (after["status"], after["step"]) == ("ready", 1)
+    assert (await human.op("questions_list", {"status": "open"}))["data"]["questions"] == []
+
+
+async def test_opencode_run_without_my_team_config_fails_fast(state, human, launched, monkeypatch, tmp_path):
+    monkeypatch.setattr(agent_clis, "detect", lambda: [{"agent_type": "opencode", "installed": True}])
+    monkeypatch.setattr(runner, "opencode_config_dir", lambda home: tmp_path / "no-opencode-config")
+    ticket = (await human.op("ticket_create", {"title": "OC", "status": "ready",
+                                               "acceptance_criteria": ["done"]}))["data"]["ticket"]
+    await human.op("ticket_assign", {"key": ticket["key"], "agent_type": "opencode"})
+    await human.op("settings_update", {"auto_run": True})
+    runner.tick(state)
+    run = (await human.op("runs_list", {"key": ticket["key"]}))["data"]["runs"][0]
+    assert run["status"] == "failed" and "my-team install opencode" in run["error"]
