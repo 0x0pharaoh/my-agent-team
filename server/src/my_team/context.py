@@ -19,6 +19,10 @@ def render_context(data: dict, resolved: dict, full: bool) -> str:
         lines.append(f"The human is waiting for your reply to message {message['id']}: "
                      f"{json.dumps(_short(message['body'], 300))}. Answer it first with message_send(to=\"human\", "
                      f"reply_to=\"{message['id']}\"), then ack it with inbox.")
+    for question in data.get("questions_for_you") or []:
+        lines.append(f"Your worker {question['asked_by']} asks (question {question['id']}): "
+                     f"{json.dumps(_short(question['prompt'], 300))}. Answer with question_reply, or pass it to the "
+                     "human with question_escalate.")
     active = data.get("active_ticket")
     if active:
         lines.append(f"Active ticket: {active['key']} \"{_short(active['title'], 200)}\" · epoch {active['claim_epoch']} · "

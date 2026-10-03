@@ -181,7 +181,8 @@ def reply_brief(run: dict) -> str:
             "your answer. Call the my-team tool inbox, answer every message from the human with message_send "
             "(to=\"human\", reply_to=<message id>), then ack them with inbox. Answer from what you know about this "
             "project; do not edit files, claim tickets or start other work. If a message asks for work, say what "
-            "you would do and that the human can assign it as a ticket.")
+            "you would do and that the human can assign it as a ticket. Your context may also list questions your "
+            "workers routed to you: answer each with question_reply, or question_escalate it to the human.")
 
 
 def _worktree(root: Path, project_id: str, key: str, branch: str) -> Path:

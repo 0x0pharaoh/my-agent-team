@@ -12,7 +12,7 @@ EXTEND, REASSIGN, CANCEL = "Extend budget x2", "Reassign", "Cancel ticket"
 REPLY_MAX_TOKENS, REPLY_MAX_SECONDS, REPLY_GRACE_MS = 60_000, 300, 30_000
 _SELECT = ("SELECT r.*, t.key AS ticket_key, a.display_name AS agent_name FROM runs r"
            " LEFT JOIN tickets t ON t.id = r.ticket_id JOIN agents a ON a.id = r.agent_id")
-_FIELDS = ("id", "pid", "message_id", "kind", "step_index", "agent_type", "status", "worktree_path", "branch", "max_tokens", "max_seconds",
+_FIELDS = ("id", "pid", "message_id", "question_id", "kind", "step_index", "agent_type", "status", "worktree_path", "branch", "max_tokens", "max_seconds",
            "tokens", "cost_usd", "summary", "error", "native_session_id", "session_id", "created_ms", "started_ms",
            "ended_ms")
 
@@ -100,13 +100,24 @@ def schedule_replies(tx: Tx, now: int, agent_types: set[str], limit: int) -> lis
         " AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.agent_id = a.id AND s.ended_ms IS NULL"
         " AND s.last_heartbeat_ms > ?) GROUP BY a.id LIMIT ?",
         (now - REPLY_GRACE_MS, *sorted(agent_types), now - sessions.OFFLINE_AFTER_MS, free))
+    seen = {seat["agent_id"] for seat in seats}
+    leads = tx.all(
+        "SELECT a.id AS agent_id, a.agent_type, MIN(q.id) AS question_id FROM questions q"
+        " JOIN agents a ON a.id = q.routed_to_agent_id"
+        f" WHERE q.status = 'open' AND q.created_ms < ? AND a.agent_type IN ({placeholders})"
+        " AND NOT EXISTS (SELECT 1 FROM runs x WHERE x.question_id = q.id)"
+        f" AND NOT EXISTS (SELECT 1 FROM runs x WHERE x.agent_id = a.id AND x.status IN {ACTIVE})"
+        " AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.agent_id = a.id AND s.ended_ms IS NULL"
+        " AND s.last_heartbeat_ms > ?) GROUP BY a.id",
+        (now - REPLY_GRACE_MS, *sorted(agent_types), now - sessions.OFFLINE_AFTER_MS))
+    seats = [dict(row) for row in (*seats, *(lead for lead in leads if lead["agent_id"] not in seen))][:free]
     queued_runs = []
     for seat in seats:
         run_id = new_id()
-        tx.execute("INSERT INTO runs (id, kind, agent_id, agent_type, message_id, status, max_tokens, max_seconds,"
-                   " created_ms) VALUES (?, 'reply', ?, ?, ?, 'queued', ?, ?, ?)",
-                   (run_id, seat["agent_id"], seat["agent_type"], seat["message_id"], REPLY_MAX_TOKENS,
-                    REPLY_MAX_SECONDS, now))
+        tx.execute("INSERT INTO runs (id, kind, agent_id, agent_type, message_id, question_id, status, max_tokens,"
+                   " max_seconds, created_ms) VALUES (?, 'reply', ?, ?, ?, ?, 'queued', ?, ?, ?)",
+                   (run_id, seat["agent_id"], seat["agent_type"], seat.get("message_id"), seat.get("question_id"),
+                    REPLY_MAX_TOKENS, REPLY_MAX_SECONDS, now))
         events.emit(tx, "run.queued", "run", run_id, SYSTEM, {"kind": "reply", "agent_type": seat["agent_type"]}, now)
         queued_runs.append(get(tx, run_id))
     return queued_runs
@@ -141,6 +152,9 @@ def finish(tx: Tx, run_id: str, now: int, status: str, *, summary: str | None = 
                (status, (summary or "")[:4000] or None, (error or "")[:2000] or None, now, run_id))
     events.emit(tx, "run.finished", "run", run_id, SYSTEM, {"ticket": run["ticket"], "status": status}, now)
     if run["kind"] == "reply":
+        if run["question_id"] and tx.scalar("SELECT 1 FROM questions WHERE id = ? AND status = 'open'"
+                                            " AND routed_to_agent_id = ?", (run["question_id"], run_agent(tx, run_id))):
+            questions.escalate(tx, SYSTEM, now, run["question_id"], force=True)
         return get(tx, run_id)
     key = run["ticket"]
     ticket = tx.one("SELECT * FROM tickets WHERE key = ?", (key,))
@@ -219,6 +233,10 @@ def on_answer(tx: Tx, actor: Actor, question_id: str, answer: str, now: int, sta
         tickets.assign(tx, actor, key, None, now, stall_cutoff)
     elif answer == CANCEL:
         tickets.transition(tx, actor, key, "cancel", now, stall_cutoff)
+
+
+def run_agent(tx: Tx, run_id: str) -> str:
+    return tx.scalar("SELECT agent_id FROM runs WHERE id = ?", (run_id,))
 
 
 def orphaned(tx: Tx) -> list[dict]:

@@ -76,7 +76,8 @@ def team_context(ctx: Ctx, inp: TeamContextIn) -> dict:
     active = tickets.get(ctx.tx, held, ctx.stall_cutoff) if held else None
     result = {"you": {"agent": ctx.session["agent_name"], "session_id": ctx.session["id"]},
               "active_ticket": active, "notices": news,
-              "awaiting_reply": messages.awaiting_reply(ctx.tx, ctx.session["agent_id"])}
+              "awaiting_reply": messages.awaiting_reply(ctx.tx, ctx.session["agent_id"]),
+              "questions_for_you": questions.routed_to(ctx.tx, ctx.session["agent_id"])}
     if inp.delta:
         return result
     root = Path(ctx.project["root"])
@@ -533,11 +534,37 @@ class AskHumanIn(Input):
     ticket: str | None = None
 
 
-@op("ask_human", AskHumanIn, AGENT, "Ask the human a question or for a decision; it appears in their dashboard "
-    "Inbox and the answer arrives as a notice.", tool=True)
-def ask_human(ctx: Ctx, inp: AskHumanIn) -> dict:
+def ask(ctx: Ctx, inp: AskHumanIn) -> dict:
     return {"question": questions.ask(ctx.tx, ctx.actor, ctx.now, kind=inp.kind, prompt=inp.prompt,
-                                      options=inp.options, recommendation=inp.recommendation, ticket=inp.ticket)}
+                                      options=inp.options, recommendation=inp.recommendation, ticket=inp.ticket,
+                                      route=True)}
+
+
+_ASK = ("Ask a question or for a decision. A question goes to your lead first if you report to one; decisions "
+        "and questions without a lead go to the human's Inbox. The answer arrives as a notice.")
+op("ask", AskHumanIn, AGENT, _ASK, tool=True)(ask)
+op("ask_human", AskHumanIn, AGENT, _ASK, tool=True)(ask)
+
+
+class QuestionReplyIn(Input):
+    id: str
+    answer: str = Field(..., max_length=4000)
+
+
+@op("question_reply", QuestionReplyIn, AGENT, "As a lead, answer a question one of your workers routed to you.",
+    tool=True)
+def question_reply(ctx: Ctx, inp: QuestionReplyIn) -> dict:
+    return {"question": questions.reply(ctx.tx, ctx.actor, ctx.now, inp.id, inp.answer)}
+
+
+class QuestionIdIn(Input):
+    id: str
+
+
+@op("question_escalate", QuestionIdIn, AGENT, "As a lead, pass a question routed to you up to the human.",
+    tool=True)
+def question_escalate(ctx: Ctx, inp: QuestionIdIn) -> dict:
+    return {"question": questions.escalate(ctx.tx, ctx.actor, ctx.now, inp.id)}
 
 
 class QuestionAnswerIn(Input):

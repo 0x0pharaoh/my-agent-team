@@ -911,7 +911,8 @@ function AgentsView({ project, agents, run }: {
 }
 
 type Question = { id: string; kind: string; prompt: string; options: string[]; recommendation: string | null;
-  answer: string | null; status: string; ticket: string | null; asked_by: string | null; created_ms: number };
+  answer: string | null; status: string; ticket: string | null; asked_by: string | null; created_ms: number;
+  routed_to: string | null; escalated_ms: number | null };
 type Message = { id: string; channel: string; ticket: string | null; from: string; trust: string; body: string;
   requires_response: boolean; replied: boolean; created_ms: number; recipients: { to: string; read_ms: number | null }[] };
 type Memory = { id: string; kind: string; title: string; body: string; source: string; status: string;
@@ -924,6 +925,7 @@ function QuestionCard({ question, run }: { question: Question; run: (name: strin
     <li className="rounded-md border border-border bg-surface-raised p-3">
       <p className="text-xs text-muted">
         {question.kind} from {question.asked_by ?? "an agent"}{question.ticket && ` · ${question.ticket}`}
+        {question.routed_to ? ` · with lead ${question.routed_to}` : question.escalated_ms ? " · escalated to you" : ""}
       </p>
       <p className="my-1 whitespace-pre-wrap font-medium">{question.prompt}</p>
       {question.options.length > 0 && (
