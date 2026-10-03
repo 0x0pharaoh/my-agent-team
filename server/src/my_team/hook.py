@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 
 from my_team import activation
@@ -7,6 +8,7 @@ from my_team.client import DaemonError, DaemonUnavailable, connect
 from my_team.context import NOT_INITIALIZED, hook_output, render_context, unavailable
 
 EVENTS = ("session-start", "prompt", "pre-edit", "tool")
+_PATCH_FILE = re.compile(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$", re.MULTILINE)
 
 
 def output(agent: str, event: str, text: str | None) -> str:
@@ -59,12 +61,25 @@ def pre_edit_text(agent: str, payload: dict) -> str | None:
         _, client, project, session = _session(agent, native, cwd)
         if client is None or project is None:
             return None
-        # ponytail: single path only; V4A multi-file patches stay unchecked until the hook loops files
-        path = payload.get("file_path") or (payload.get("tool_input") or {}).get("path")
-        verdict = client.project(project["id"], "edit_check", {"path": path}, session["session_id"])
+        for path in _edit_paths(payload) or [None]:
+            verdict = client.project(project["id"], "edit_check", {"path": path}, session["session_id"])
+            if verdict["decision"] == "ask":
+                return verdict["reason"]
     except Exception:
         return None
-    return verdict["reason"] if verdict["decision"] == "ask" else None
+    return None
+
+
+def _edit_paths(payload: dict) -> list:
+    if payload.get("file_path"):
+        return [payload["file_path"]]
+    tool_input = payload.get("tool_input") or {}
+    if tool_input.get("path"):
+        return [tool_input["path"]]
+    command = tool_input.get("command")
+    if isinstance(command, str) and "*** Begin Patch" in command:
+        return [m.group(1).strip() for m in _PATCH_FILE.finditer(command)]
+    return []
 
 
 def run(event: str, agent: str) -> int:
@@ -73,6 +88,10 @@ def run(event: str, agent: str) -> int:
         text = pre_edit_text(agent, payload)
         if agent == "hermes" and text:
             text = json.dumps({"action": "approve", "message": text})
+        elif agent == "codex" and text and os.environ.get("MY_TEAM_CODEX_DENY_UNCLAIMED") == "1":
+            text = json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                                      "permissionDecision": "deny",
+                                                      "permissionDecisionReason": text}})
     elif event == "tool":
         session = payload.get("session_id")
         text = json.dumps({"action": "modify", "args": {"session": session}}) if session else None

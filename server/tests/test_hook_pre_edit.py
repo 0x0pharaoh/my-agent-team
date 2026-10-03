@@ -44,6 +44,10 @@ async def _opencode(http, state, repo, native_id):
     return await Agent(http, state, agent_type="opencode", native_id=native_id).join(repo)
 
 
+async def _codex(http, state, repo, native_id):
+    return await Agent(http, state, agent_type="codex", native_id=native_id).join(repo)
+
+
 async def _claimed(human, agent, title, paths):
     ticket = (await human.op("ticket_create", {"title": title, "status": "ready",
                                                "acceptance_criteria": ["done"]}))["data"]["ticket"]
@@ -127,3 +131,51 @@ async def test_hermes_tool_input_path_asks_with_approve_json(hooked, http, state
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
     assert await anyio.to_thread.run_sync(hook.run, "pre-edit", "hermes") == 0
     assert json.loads(capsys.readouterr().out) == {"action": "approve", "message": reason}
+
+
+PATCH = ("*** Begin Patch\n*** Update File: src/a.py\n@@\n+x\n"
+         "*** Add File: src/b.py\n@@\n+y\n*** End Patch\n")
+
+
+def _patch_payload(repo, native_id, command=None):
+    return {"session_id": native_id, "cwd": str(repo),
+            "tool_input": {"command": command if command is not None else PATCH}}
+
+
+async def test_codex_patch_paths_ask_without_claim(hooked, http, state, repo):
+    activation.set_scope("directory", True, cwd=str(repo))
+    await _codex(http, state, repo, "op-1")
+    payload = _patch_payload(repo, "op-1")
+    reason = await anyio.to_thread.run_sync(hook.pre_edit_text, "codex", payload)
+    assert reason and "no claimed ticket" in reason
+
+
+async def test_codex_multi_file_patch_asks_when_any_path_unclaimed(hooked, http, state, repo, human):
+    activation.set_scope("directory", True, cwd=str(repo))
+    me = await _codex(http, state, repo, "op-1")
+    other = await _codex(http, state, repo, "op-2")
+    await _claimed(human, other, "API work", ["src/api"])
+    await _claimed(human, me, "UI work", ["ui/"])
+    payload = {"session_id": "op-1", "cwd": str(repo), "tool_input": {"command": (
+        "*** Begin Patch\n*** Update File: ui/Board.tsx\n@@\n+x\n"
+        "*** Update File: src/api/users.py\n@@\n+y\n*** End Patch\n")}}
+    reason = await anyio.to_thread.run_sync(hook.pre_edit_text, "codex", payload)
+    assert reason and "src/api/users.py" in reason
+
+
+async def test_codex_deny_json_only_with_flag(hooked, http, state, repo, monkeypatch, capsys):
+    activation.set_scope("directory", True, cwd=str(repo))
+    await _codex(http, state, repo, "op-1")
+    payload = _patch_payload(repo, "op-1")
+    reason = await anyio.to_thread.run_sync(hook.pre_edit_text, "codex", payload)
+    assert reason and "no claimed ticket" in reason
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    assert await anyio.to_thread.run_sync(hook.run, "pre-edit", "codex") == 0
+    out = capsys.readouterr().out
+    assert "permissionDecision" not in out
+    monkeypatch.setenv("MY_TEAM_CODEX_DENY_UNCLAIMED", "1")
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    assert await anyio.to_thread.run_sync(hook.run, "pre-edit", "codex") == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                               "permissionDecisionReason": reason}}

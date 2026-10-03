@@ -19,7 +19,8 @@ my-team setup                                  # dashboard passphrase
 In any project in Claude Code, run `/my-team:init`. It binds the project, switches my-team on, drafts the five docs
 with you, and proposes tickets. Run `my-team open` for the dashboard, where you create, assign and close tickets.
 Agents claim what you assign and stop at review. The pre-edit permission prompt works in Claude Code, OpenCode, and
-Hermes; Codex sessions follow the claim rule unguarded.
+Hermes; Codex sessions follow the claim rule unguarded. Opt-in hard block (spike): set
+`MY_TEAM_CODEX_DENY_UNCLAIMED=1` where Codex runs and reinstall, to deny unclaimed `apply_patch` edits.
 
 The design is in [`docs/`](docs/):
 
