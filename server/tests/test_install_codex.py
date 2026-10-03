@@ -76,3 +76,32 @@ def test_codex_hooks_use_shell_strings_and_replace_old_entries(tmp_path, monkeyp
     prompt = hooks["UserPromptSubmit"][0]["hooks"][0]
     assert prompt["type"] == "command" and prompt["command"].endswith("hook prompt --agent codex")
     assert "mcp_tool" not in hooks_path.read_text(encoding="utf-8")
+
+
+def test_deny_hook_written_only_with_flag_and_removed_without(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex"
+    hooks_path = codex_home / "hooks.json"
+    hooks_path.parent.mkdir(parents=True)
+    hooks_path.write_text(json.dumps({"hooks": {}}), encoding="utf-8")
+    monkeypatch.setenv("MY_TEAM_CODEX_DENY_UNCLAIMED", "1")
+    codex._write_hooks(codex_home, "C:/t/my-team.exe", deny=True)
+    pre = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]["PreToolUse"]
+    assert len(pre) == 1 and pre[0]["matcher"] == "apply_patch|Edit|Write"
+    assert pre[0]["hooks"][0]["command"].endswith("hook pre-edit --agent codex")
+    monkeypatch.delenv("MY_TEAM_CODEX_DENY_UNCLAIMED")
+    codex._write_hooks(codex_home, "C:/t/my-team.exe")
+    assert "PreToolUse" not in json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
+
+
+def test_install_wires_deny_flag_to_write_hooks(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setenv("MY_TEAM_CODEX_DENY_UNCLAIMED", "1")
+    monkeypatch.setattr(codex, "cli_path", lambda: "C:/t/my-team.exe")
+    monkeypatch.setattr(codex, "_write_hooks",
+                        lambda home, cli, deny=False: seen.setdefault("deny", deny))
+    monkeypatch.setattr(codex, "_add_mcp", lambda cli: None)
+    monkeypatch.setattr(codex, "copy_skill", lambda target: True)
+    monkeypatch.setattr(codex.config, "save", lambda **kwargs: None)
+    monkeypatch.setattr(codex, "confirm", lambda plan, yes: True)
+    assert codex.install(yes=True) == 0
+    assert seen["deny"] is True

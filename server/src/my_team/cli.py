@@ -15,6 +15,77 @@ def _serve(args) -> int:
     return run(args.port)
 
 
+def _live_sessions() -> list[dict]:
+    """Non-ended sessions across project DBs, read-only; newest heartbeat first."""
+    import sqlite3
+    from my_team.paths import private_data_dir, projects_dir
+    registry = private_data_dir() / "registry.db"
+    if not registry.is_file():
+        return []
+    out = []
+    with sqlite3.connect(f"file:{registry}?mode=ro", uri=True) as conn:
+        project_ids = [row[0] for row in conn.execute("SELECT id FROM projects")]
+    for pid in project_ids:
+        path = projects_dir() / f"{pid}.db"
+        if not path.is_file():
+            continue
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+            for agent_type, native, root, heartbeat in conn.execute(
+                    "SELECT agent_type, native_session_id, root_path, last_heartbeat_ms FROM sessions"
+                    " WHERE ended_ms IS NULL ORDER BY last_heartbeat_ms DESC"):
+                out.append({"agent_type": agent_type, "native": native, "root": root,
+                            "heartbeat_ms": heartbeat})
+    return out
+
+
+def _stop_daemon(pid: int, timeout_s: float = 10) -> bool:
+    import signal
+    import time
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def _upgrade(args) -> int:
+    import shutil
+    import subprocess
+    from my_team import client
+    from my_team.paths import private_data_dir
+    sessions = _live_sessions()
+    if sessions:
+        print("Recorded sessions (interrupted work will show as stalled):")
+    for session in sessions:
+        print(f"  {session['agent_type']} {session['native']} in {session['root']}")
+    info = client._server_info()
+    if info is not None:
+        if input("Stop the daemon and upgrade my-team-agents? [y/N] ").strip().lower() != "y":
+            return 1
+        pid = info.get("pid")
+        if pid and not _stop_daemon(pid):
+            print(f"could not stop the daemon (pid {pid}); upgrade aborted.")
+            return 1
+        (private_data_dir() / "server.json").unlink(missing_ok=True)
+    uv = shutil.which("uv")
+    if uv is None:
+        print("uv not found on PATH; upgrade my-team-agents manually.")
+        return 1
+    proc = subprocess.run([uv, "tool", "upgrade", "my-team-agents"], check=False)
+    if proc.returncode != 0:
+        print(f"`uv tool upgrade my-team-agents` failed (rc={proc.returncode}).")
+        return 1
+    print("Upgraded. The daemon restarts on demand.")
+    return 0
+
+
 def _status(args) -> int:
     from my_team.client import DaemonUnavailable, connect
     try:
@@ -139,6 +210,7 @@ def main(argv=None) -> int:
     serve.add_argument("--port", type=int)
     serve.set_defaults(handler=_serve)
     commands.add_parser("status", help="is the daemon running?").set_defaults(handler=_status)
+    commands.add_parser("upgrade", help="stop the daemon and upgrade my-team-agents").set_defaults(handler=_upgrade)
     commands.add_parser("open", help="open the dashboard").set_defaults(handler=_open)
     commands.add_parser("doctor", help="check the install, data and git").set_defaults(handler=_doctor)
     commands.add_parser("backup", help="back up every database now").set_defaults(handler=_backup)

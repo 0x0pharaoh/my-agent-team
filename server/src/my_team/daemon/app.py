@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+import os
+import secrets
 from importlib import resources
 from pathlib import Path
 
@@ -14,9 +16,10 @@ from my_team.ids import new_id
 from my_team.actor import HUMAN, Actor, agent_actor
 from my_team.clock import now_ms
 from my_team.daemon.state import DaemonState, db_epoch
+from my_team.db import backup
 from my_team.db.engine import SchemaTooNew
-from my_team.domain import events, notices, projects, sessions
-from my_team.errors import DomainError, Forbidden, NotFound, Unauthorized, Unavailable
+from my_team.domain import events, memory, notices, projects, sessions
+from my_team.errors import DomainError, Forbidden, Invalid, NotFound, Unauthorized, Unavailable
 from my_team.ops import AGENT_INFRA, NO_NOTICES, NOT_ACTIVITY, OPS, REGISTRY_OPS, Ctx, RegistryCtx
 
 log = logging.getLogger("my_team.daemon")
@@ -175,7 +178,8 @@ def create_app(state: DaemonState, static_dir: Path | None = None) -> FastAPI:
 
     @app.post("/auth/passkey/register/options")
     async def passkey_register_options(request: Request):
-        if await authenticate(request, b"") != HUMAN:
+        raw = await request.body()
+        if await authenticate(request, raw) != HUMAN:
             raise Forbidden("human_only", "Adding a passkey needs a logged-in human.")
         existing = await state.registry.read(
             lambda tx: [passkeys.b64u_decode(row[0]) for row in
@@ -187,9 +191,10 @@ def create_app(state: DaemonState, static_dir: Path | None = None) -> FastAPI:
 
     @app.post("/auth/passkey/register/finish")
     async def passkey_register_finish(request: Request):
-        if await authenticate(request, b"") != HUMAN:
+        raw = await request.body()
+        if await authenticate(request, raw) != HUMAN:
             raise Forbidden("human_only", "Adding a passkey needs a logged-in human.")
-        body = parse_json(await request.body())
+        body = parse_json(raw)
         challenge, origin = _take_challenge(body, "register", request.headers.get("host", "localhost"))
         verified = await asyncio.to_thread(passkeys.verify_registration, body.get("credential", {}),
                                            passkeys.b64u_decode(challenge), origin)
@@ -252,12 +257,63 @@ def create_app(state: DaemonState, static_dir: Path | None = None) -> FastAPI:
 
     @app.post("/auth/passkey/remove")
     async def passkey_remove(request: Request):
-        if await authenticate(request, b"") != HUMAN:
+        raw = await request.body()
+        if await authenticate(request, raw) != HUMAN:
             raise Forbidden("human_only", "Removing a passkey needs a logged-in human.")
-        body = parse_json(await request.body())
+        body = parse_json(raw)
         await state.registry.write(lambda tx: tx.execute("DELETE FROM passkeys WHERE id = ?",
                                                          (str(body.get("id", "")),)))
         return envelope({"ok": True})
+
+    @app.post("/api/v1/projects/{project_id}/memory_purge")
+    async def memory_purge(project_id: str, request: Request):
+        raw = await request.body()
+        if await authenticate(request, raw) != HUMAN:
+            raise Forbidden("human_only", "Purging a memory needs a logged-in human.")
+        info = await state.project(project_id)
+        body = parse_json(raw)
+        db = await asyncio.to_thread(state.project_db, project_id)
+        backed = await asyncio.to_thread(backup.backups_for, project_id)
+
+        def unit(tx):
+            return memory.purge(tx, HUMAN, Path(info["root"]), str(body.get("id", "")), now_ms(),
+                                [b["name"] for b in backed])
+
+        purged = await db.write(unit)
+        await asyncio.to_thread(db.vacuum_sync)
+        return envelope({"memory": purged, "affected_backups": [b["name"] for b in backed]})
+
+    @app.post("/api/v1/projects/{project_id}/db_backups")
+    async def db_backups(project_id: str, request: Request):
+        raw = await request.body()
+        if await authenticate(request, raw) != HUMAN:
+            raise Forbidden("human_only", "Listing backups needs a logged-in human.")
+        await state.project(project_id)
+        return envelope({"backups": await asyncio.to_thread(backup.backups_for, project_id)})
+
+    @app.post("/api/v1/projects/{project_id}/db_restore")
+    async def db_restore(project_id: str, request: Request):
+        raw = await request.body()
+        if await authenticate(request, raw) != HUMAN:
+            raise Forbidden("human_only", "Restoring a database needs a logged-in human.")
+        await state.project(project_id)
+        name = str(parse_json(raw).get("backup", ""))
+        folder = backup.private_data_dir() / "backups"
+        candidate = folder / name
+        if not name or candidate.parent != folder or not candidate.is_file():
+            raise Invalid("bad_backup", "Unknown backup file.")
+        await asyncio.to_thread(backup.verify_backup, candidate, "project")
+        live = backup.projects_dir() / f"{project_id}.db"
+        spare = await asyncio.to_thread(backup.snapshot_before_restore, live, now_ms())
+        live = await asyncio.to_thread(state.close_project_db, project_id)
+        for sibling in (live.parent / (live.name + suffix) for suffix in ("-wal", "-shm", "-journal")):
+            sibling.unlink(missing_ok=True)
+        os.replace(candidate, live)
+        db = await asyncio.to_thread(state.project_db, project_id)
+        epoch = secrets.token_hex(4)
+        await db.write(lambda tx: tx.execute("UPDATE meta SET value = ? WHERE key = 'db_epoch'", (epoch,)))
+        return envelope({"restored": name, "db_epoch": epoch,
+                         "spare": spare.name if spare else None})
 
     @app.post("/api/v1/registry/{name}")
     async def registry_call(name: str, request: Request):

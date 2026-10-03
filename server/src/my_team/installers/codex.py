@@ -23,11 +23,14 @@ def install(yes: bool = False) -> int:
         f"merge my-team hooks into {chome / 'hooks.json'}",
         "let the my-team daemon start on demand (no OS service)",
     ]
+    deny = os.environ.get("MY_TEAM_CODEX_DENY_UNCLAIMED") == "1"
+    if deny:
+        plan.append("add PreToolUse hook blocking unclaimed apply_patch edits")
     if not confirm(plan, yes):
         return 1
     copy_skill(home / ".agents" / "skills" / "my-team")
     _add_mcp(cli)
-    _write_hooks(chome, cli)
+    _write_hooks(chome, cli, deny=deny)
     config.save(autostart=True)
     print("\nDone. Trust the my-team hooks once in Codex's /hooks screen, then run $my-team init in a project.")
     return 0
@@ -45,15 +48,23 @@ def _run(args: list[str], **kwargs):
     return subprocess.run(args, check=check, **kwargs)
 
 
-def _write_hooks(codex_home: Path, cli: str) -> None:
+def _write_hooks(codex_home: Path, cli: str, deny: bool = False) -> None:
     hooks_path = codex_home / "hooks.json"
     codex_home.mkdir(parents=True, exist_ok=True)
     data = _read_hooks(hooks_path)
     hooks = data.setdefault("hooks", {})
-    for event in ("SessionStart", "UserPromptSubmit"):
-        hooks[event] = [entry for entry in hooks.get(event, []) if not _ours(entry)]
-    hooks["SessionStart"].append({"matcher": "startup|resume|clear|compact", "hooks": [_command(cli, "session-start")]})
-    hooks["UserPromptSubmit"].append({"hooks": [_command(cli, "prompt")]})
+    for event in ("SessionStart", "UserPromptSubmit", "PreToolUse"):
+        kept = [entry for entry in hooks.get(event, []) if not _ours(entry)]
+        if kept:
+            hooks[event] = kept
+        else:
+            hooks.pop(event, None)
+    hooks.setdefault("SessionStart", []).append(
+        {"matcher": "startup|resume|clear|compact", "hooks": [_command(cli, "session-start")]})
+    hooks.setdefault("UserPromptSubmit", []).append({"hooks": [_command(cli, "prompt")]})
+    if deny:
+        hooks.setdefault("PreToolUse", []).append(
+            {"matcher": "apply_patch|Edit|Write", "hooks": [_command(cli, "pre-edit")]})
     hooks_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 

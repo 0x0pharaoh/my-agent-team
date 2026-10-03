@@ -127,6 +127,12 @@ async def test_protected_routes_need_login(state):
             assert response.json()["error"]["code"] == "login_required"
 
 
+async def test_signed_agent_calls_get_human_only_not_bad_signature(agent, repo):
+    await agent.join(repo)
+    denied = await agent.raw(f"/api/v1/projects/{agent.project_id}/memory_purge", {"id": "x"})
+    assert denied.json()["error"]["code"] == "human_only"
+
+
 async def test_exclude_lists_registered_credential(http, human):
     await _register(http)
     options = (await http.post("/auth/passkey/register/options", json={}, headers=_H)).json()["data"]["options"]

@@ -110,6 +110,21 @@ def get(tx: Tx, root: Path, memory_id: str) -> dict:
     return serialize(row, root)
 
 
+def purge(tx: Tx, actor: Actor, root: Path, memory_id: str, now: int, backups: list[str]) -> dict:
+    """Human-only overwrite: text becomes [purged] (triggers rebuild FTS), backups get flagged."""
+    get(tx, root, memory_id)
+    digest = hashlib.sha256("\0".join(("purged", "[purged]", "[purged]")).encode()).hexdigest()
+    tx.execute("UPDATE memories SET title = '[purged]', body = '[purged]', tags = '', files = '[]',"
+               " content_hash = ? WHERE id = ?", (digest, memory_id))
+    tx.execute("INSERT INTO memories_fts(memories_fts) VALUES('optimize')")
+    for name in backups:
+        tx.execute("INSERT INTO purge_flags (memory_id, backup_name, flagged_ms) VALUES (?, ?, ?)",
+                   (memory_id, name, now))
+    events.emit(tx, "memory.purged", "memory", memory_id, actor,
+                {"backups": backups}, now)
+    return get(tx, root, memory_id)
+
+
 def _check_quota(tx: Tx, actor: Actor, now: int) -> None:
     recent = tx.scalar(
         "SELECT COUNT(*) FROM memories m JOIN agents a ON a.id = m.author_id WHERE m.created_ms > ?"

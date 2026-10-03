@@ -854,6 +854,48 @@ function SettingsView({ project, tick }: { project: string; tick: number }) {
         </tbody>
       </table>
       <Passkeys />
+      <Restore project={project} />
+    </section>
+  );
+}
+
+function Restore({ project }: { project: string }) {
+  const [backups, setBackups] = useState<{ name: string }[]>([]);
+  const [choice, setChoice] = useState("");
+  const [confirmText, setConfirmText] = useState("");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    op<{ backups: { name: string }[] }>(project, "db_backups").then((r) => setBackups(r.data.backups));
+  }, [project]);
+  async function restore(event: FormEvent) {
+    event.preventDefault();
+    if (confirmText !== choice || !choice) return;
+    setError("");
+    try {
+      await op(project, "db_restore", { backup: choice });
+    } catch (exc) {
+      setError(exc instanceof ApiError ? exc.message : "Restore failed.");
+    }
+    setConfirmText("");
+  }
+  return (
+    <section aria-label="Restore" className="mt-6">
+      <h2 className="mb-2 font-semibold">Restore database</h2>
+      {error && <p role="alert" className="mb-2 text-sm text-danger">{error}</p>}
+      {backups.length === 0 && <p className="text-sm text-muted">No backups yet.</p>}
+      {backups.length > 0 && (
+        <form onSubmit={restore} className="flex flex-wrap items-center gap-2">
+          <select aria-label="Backup" className={`${field} w-auto`} value={choice}
+            onChange={(e) => setChoice(e.target.value)}>
+            <option value="">Pick a backup…</option>
+            {backups.map((b) => <option key={b.name} value={b.name}>{b.name}</option>)}
+          </select>
+          <input aria-label="Type the backup name to confirm" placeholder="Type the name to confirm"
+            className={`${field} w-auto`} value={confirmText} onChange={(e) => setConfirmText(e.target.value)} />
+          <button type="submit" className={secondary}
+            disabled={!choice || confirmText !== choice}>Restore</button>
+        </form>
+      )}
     </section>
   );
 }
@@ -1099,6 +1141,9 @@ function MemoryView({ project, tick, run }: { project: string; tick: number; run
                 )}
                 <button className={`${secondary} text-xs`}
                   onClick={() => run("memory_correct", { id: m.id, action: "retract" })}>Retract</button>
+                <button className={`${secondary} text-xs`}
+                  onClick={() => window.confirm(`Purge "${m.title}"? Its text is overwritten and cannot be recovered.`)
+                    && run("memory_purge", { id: m.id })}>Purge</button>
               </div>
             </li>
           ))}
