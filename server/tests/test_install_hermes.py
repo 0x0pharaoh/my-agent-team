@@ -1,4 +1,5 @@
 """Tests for the my-team -> Hermes installer. Everything runs in tmp dirs; the real config is never touched."""
+
 from __future__ import annotations
 
 import json
@@ -7,20 +8,24 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 import my_team.installers.hermes as hermes_installer
+import pytest
 
 
 def _fake_hermes_cli(tmp_path: Path) -> Path:
     cli = tmp_path / "hermes"
-    cli.write_text("#!/usr/bin/env python3\nimport sys, json\nprint(json.dumps({\"ok\": True}))\n")
+    cli.write_text(
+        '#!/usr/bin/env python3\nimport sys, json\nprint(json.dumps({"ok": True}))\n'
+    )
     return cli
 
 
-def _stub_hermes_input(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cfg: Path, mode: str, rc: int = 0) -> str:
+def _stub_hermes_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cfg: Path, mode: str, rc: int = 0
+) -> str:
     """Executable stub hermes: input mode calls input() then exits 1; write mode registers and exits rc."""
     import sys
+
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     stub = bindir / "stub_input.py"
@@ -41,12 +46,17 @@ def _stub_hermes_input(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cfg: Pat
         f"sys.exit({rc})\n",
         encoding="utf-8",
     )
-    (bindir / "hermes-in").write_text("#!/usr/bin/env python3\n" + stub.read_text(encoding="utf-8"),
-                                      encoding="utf-8")
+    (bindir / "hermes-in").write_text(
+        "#!/usr/bin/env python3\n" + stub.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     (bindir / "hermes-in").chmod(0o755)
-    (bindir / "hermes-in.bat").write_text(f'@"{sys.executable}" "{stub}" %*\n', encoding="utf-8")
+    (bindir / "hermes-in.bat").write_text(
+        f'@"{sys.executable}" "{stub}" %*\n', encoding="utf-8"
+    )
     monkeypatch.setenv("MY_TEAM_TEST_HERMES_CONFIG", str(cfg))
-    return str(bindir / "hermes-in.bat") if os.name == "nt" else str(bindir / "hermes-in")
+    return (
+        str(bindir / "hermes-in.bat") if os.name == "nt" else str(bindir / "hermes-in")
+    )
 
 
 def _write_config(home: Path, text: str) -> None:
@@ -93,7 +103,9 @@ class TestInstallHermes:
         home = tmp_path / "hermes-home"
         home.mkdir(parents=True, exist_ok=True)
         with (
-            patch.object(hermes_installer, "_hermes_cli", return_value="/no/such/hermes"),
+            patch.object(
+                hermes_installer, "_hermes_cli", return_value="/no/such/hermes"
+            ),
             patch.object(hermes_installer, "hermes_home", return_value=home),
             patch("my_team.installers.hermes.confirm", return_value=False),
         ):
@@ -153,7 +165,9 @@ class TestInstallHermes:
     def test_ensure_mcp_no_cli_prints_error_and_skips(self, tmp_path: Path) -> None:
         home = tmp_path / "hermes-home"
         with (
-            patch.object(hermes_installer, "_hermes_cli", return_value="/no/such/hermes"),
+            patch.object(
+                hermes_installer, "_hermes_cli", return_value="/no/such/hermes"
+            ),
             patch("subprocess.run", side_effect=FileNotFoundError("not found")),
         ):
             hermes_installer._ensure_mcp(home, "/no/such/hermes", "/fake/my-team")
@@ -163,29 +177,42 @@ class TestInstallHermes:
     ) -> None:
         home = tmp_path / "hermes-home"
         _write_config(home, "mcp_servers:\n  my-team:\n    command: old\n")
-        with patch.dict(os.environ, patched_env, clear=False), patch("subprocess.run") as mock_run:
+        with (
+            patch.dict(os.environ, patched_env, clear=False),
+            patch("subprocess.run") as mock_run,
+        ):
             hermes_installer._ensure_mcp(home, "/no/such/hermes", "/fake/my-team")
             mock_run.assert_not_called()
         assert "already registered" in capsys.readouterr().out
 
     def test_ensure_mcp_survives_eof_on_interactive_prompt(
-        self, tmp_path: Path, patched_env: dict, monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture
+        self,
+        tmp_path: Path,
+        patched_env: dict,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
     ) -> None:
         if os.isatty(0):
             pytest.skip("stub input() needs EOF stdin")
         home = tmp_path / "hermes-home"
-        stub = _stub_hermes_input(tmp_path, monkeypatch, home / "config.yaml", mode="input")
+        stub = _stub_hermes_input(
+            tmp_path, monkeypatch, home / "config.yaml", mode="input"
+        )
         with patch.dict(os.environ, patched_env, clear=False):
             hermes_installer._ensure_mcp(home, stub, "/fake/my-team")
         assert "did not register" in capsys.readouterr().out
 
     def test_ensure_mcp_success_decided_by_reread_not_rc(
-        self, tmp_path: Path, patched_env: dict, monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture
+        self,
+        tmp_path: Path,
+        patched_env: dict,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
     ) -> None:
         home = tmp_path / "hermes-home"
-        stub = _stub_hermes_input(tmp_path, monkeypatch, home / "config.yaml", mode="write", rc=1)
+        stub = _stub_hermes_input(
+            tmp_path, monkeypatch, home / "config.yaml", mode="write", rc=1
+        )
         with patch.dict(os.environ, patched_env, clear=False):
             hermes_installer._ensure_mcp(home, stub, "/fake/my-team")
         assert "registered via hermes CLI" in capsys.readouterr().out
@@ -201,7 +228,9 @@ class TestInstallHermes:
         cmd_pre_edit = f'"{cli}" hook pre-edit --agent hermes'
         with (
             patch.dict(os.environ, patched_env, clear=False),
-            patch.object(hermes_installer, "_hermes_cli", return_value="/no/such/hermes"),
+            patch.object(
+                hermes_installer, "_hermes_cli", return_value="/no/such/hermes"
+            ),
         ):
             hermes_installer._ensure_hooks(home, "/no/such/hermes", cli)
         text = _read_config_text(home)
@@ -221,23 +250,33 @@ class TestInstallHermes:
             patch.dict(os.environ, patched_env, clear=False),
             patch("subprocess.run") as mock_run,
         ):
-            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""
+            )
             hermes_installer._ensure_mcp(home, "hermes", str(venv_myteam_cli))
             argv = mock_run.call_args[0][0]
             assert argv[-2:] == ["--args", "mcp"]
             assert argv[argv.index("--env") + 1] == "MY_TEAM_AGENT_TYPE=hermes"
 
     def test_ensure_hooks_leaves_existing_hooks_block_alone(
-        self, tmp_path: Path, patched_env: dict, venv_myteam_cli: Path, capsys: pytest.CaptureFixture
+        self,
+        tmp_path: Path,
+        patched_env: dict,
+        venv_myteam_cli: Path,
+        capsys: pytest.CaptureFixture,
     ) -> None:
         home = tmp_path / "hermes-home"
         before = "mcp_servers: {}\nhooks:\n  pre_llm_call: []\n"
         _write_config(home, before)
         with (
             patch.dict(os.environ, patched_env, clear=False),
-            patch.object(hermes_installer, "_hermes_cli", return_value="/no/such/hermes"),
+            patch.object(
+                hermes_installer, "_hermes_cli", return_value="/no/such/hermes"
+            ),
         ):
-            hermes_installer._ensure_hooks(home, "/no/such/hermes", str(venv_myteam_cli))
+            hermes_installer._ensure_hooks(
+                home, "/no/such/hermes", str(venv_myteam_cli)
+            )
         assert _read_config_text(home) == before
         assert "\nhooks:\n" not in capsys.readouterr().out
 
@@ -247,7 +286,9 @@ class TestInstallHermes:
         new = hermes_installer._hooks_text_block("/new/cli")
         assert hermes_installer._hooks_registered(new, "/new/cli")
 
-    def test_real_localappdata_hermes_config_mtime_unchanged(self, tmp_path: Path) -> None:
+    def test_real_localappdata_hermes_config_mtime_unchanged(
+        self, tmp_path: Path
+    ) -> None:
         """The real %LOCALAPPDATA%/hermes/config.yaml mtime is unchanged after install."""
         real_home = Path(os.environ.get("LOCALAPPDATA", "")) / "hermes"
         cfg_path = real_home / "config.yaml"
@@ -258,8 +299,14 @@ class TestInstallHermes:
         home.mkdir(parents=True, exist_ok=True)
         with (
             patch.object(hermes_installer, "hermes_home", return_value=home),
-            patch.object(hermes_installer, "_hermes_cli", return_value="/no/such/hermes"),
-            patch.dict(os.environ, {"HERMES_HOME": str(home), "LOCALAPPDATA": str(tmp_path)}, clear=False),
+            patch.object(
+                hermes_installer, "_hermes_cli", return_value="/no/such/hermes"
+            ),
+            patch.dict(
+                os.environ,
+                {"HERMES_HOME": str(home), "LOCALAPPDATA": str(tmp_path)},
+                clear=False,
+            ),
         ):
             ret = hermes_installer.install(yes=True)
         assert ret == 0
@@ -269,12 +316,19 @@ class TestInstallHermes:
         self, tmp_path: Path, patched_env: dict, venv_myteam_cli: Path
     ) -> None:
         home = tmp_path / "hermes-home"
-        _write_config(home, "hooks:\n  on_session_start:\n    - command: /old/my-team hook session-start --agent hermes\n")
+        _write_config(
+            home,
+            "hooks:\n  on_session_start:\n    - command: /old/my-team hook session-start --agent hermes\n",
+        )
         with (
             patch.dict(os.environ, patched_env, clear=False),
-            patch.object(hermes_installer, "_hermes_cli", return_value=str(venv_myteam_cli)),
+            patch.object(
+                hermes_installer, "_hermes_cli", return_value=str(venv_myteam_cli)
+            ),
         ):
-            hermes_installer._ensure_hooks(home, str(venv_myteam_cli), str(venv_myteam_cli))
+            hermes_installer._ensure_hooks(
+                home, str(venv_myteam_cli), str(venv_myteam_cli)
+            )
         text = _read_config_text(home)
         assert text.count("hook session-start --agent hermes") == 1
 
@@ -319,7 +373,9 @@ class TestInstallHermes:
         home = tmp_path / "hermes-home"
         with (
             patch.dict(os.environ, patched_env, clear=False),
-            patch.object(hermes_installer, "_hermes_cli", return_value="/no/such/hermes"),
+            patch.object(
+                hermes_installer, "_hermes_cli", return_value="/no/such/hermes"
+            ),
             patch.object(hermes_installer, "hermes_home", return_value=home),
             patch("subprocess.run", side_effect=FileNotFoundError("not found")),
         ):
@@ -327,3 +383,21 @@ class TestInstallHermes:
         assert ret == 0
         text = _read_config_text(home)
         assert "--agent hermes" in text
+
+    def test_install_plugin_copies_tree_and_bakes_cli(self, tmp_path: Path) -> None:
+        home = tmp_path / "hermes-home"
+        hermes_installer._install_plugin(home, "/fake/my-team")
+        dst = home / "plugins" / "my-team-kanban"
+        assert (dst / "__init__.py").is_file()
+        assert (dst / "bridge.py").is_file()
+        assert (dst / "plugin.yaml").is_file()
+        init_text = (dst / "__init__.py").read_text(encoding="utf-8")
+        assert json.dumps("/fake/my-team") in init_text
+        assert 'shutil.which("my-team")' not in init_text
+        assert hermes_installer._plugins_enabled(_read_config_text(home))
+
+    def test_ensure_plugins_enabled_idempotent(self, tmp_path: Path) -> None:
+        home = tmp_path / "hermes-home"
+        _write_config(home, "plugins:\n  enabled:\n    - my-team-kanban\n")
+        hermes_installer._ensure_plugins_enabled(home)
+        assert _read_config_text(home).count("my-team-kanban") == 1

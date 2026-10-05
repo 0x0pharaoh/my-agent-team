@@ -1,4 +1,5 @@
 """Bridge translation tests. Every event below comes from real ops via conftest fixtures."""
+
 import importlib.util
 from pathlib import Path
 
@@ -6,7 +7,9 @@ import pytest
 
 pytestmark = pytest.mark.anyio
 
-_bridge_path = Path(__file__).resolve().parents[2] / "adapters" / "hermes" / "plugin" / "bridge.py"
+_bridge_path = (
+    Path(__file__).resolve().parents[2] / "adapters" / "hermes" / "plugin" / "bridge.py"
+)
 _spec = importlib.util.spec_from_file_location("bridge", _bridge_path)
 _bridge = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_bridge)
@@ -18,12 +21,18 @@ myteam_event_to_hermes_action = _bridge.myteam_event_to_hermes_action
 
 def _load_plugin():
     import sys
+
     plugin_dir = Path(__file__).resolve().parents[2] / "adapters" / "hermes" / "plugin"
     assert (plugin_dir / "plugin.yaml").is_file()
-    for name, path in (("hplugin.bridge", plugin_dir / "bridge.py"),
-                       ("hplugin", plugin_dir / "__init__.py")):
+    for name, path in (
+        ("hplugin.bridge", plugin_dir / "bridge.py"),
+        ("hplugin", plugin_dir / "__init__.py"),
+    ):
         spec = importlib.util.spec_from_file_location(
-            name, path, submodule_search_locations=[str(plugin_dir)] if name == "hplugin" else None)
+            name,
+            path,
+            submodule_search_locations=[str(plugin_dir)] if name == "hplugin" else None,
+        )
         module = importlib.util.module_from_spec(spec)
         sys.modules[name] = module
         spec.loader.exec_module(module)
@@ -55,8 +64,13 @@ class TestPluginRegistration:
         plugin = _load_plugin()
         ctx = _Ctx()
         plugin.register(ctx)
-        assert set(ctx.hooks) == {"on_session_start", "kanban_task_claimed", "kanban_task_completed",
-                                  "kanban_task_blocked", "on_kanban_dispatch_tick"}
+        assert set(ctx.hooks) == {
+            "on_session_start",
+            "kanban_task_claimed",
+            "kanban_task_completed",
+            "kanban_task_blocked",
+            "on_kanban_dispatch_tick",
+        }
 
     def test_handlers_are_fail_open_without_state(self) -> None:
         plugin = _load_plugin()
@@ -72,13 +86,17 @@ class TestPluginRegistration:
 
 class TestTicketHash:
     def test_deterministic(self) -> None:
-        assert ticket_hash("MT-7", "ready", "seat-1") == ticket_hash("MT-7", "ready", "seat-1")
+        assert ticket_hash("MT-7", "ready", "seat-1") == ticket_hash(
+            "MT-7", "ready", "seat-1"
+        )
 
     def test_changes_on_status(self) -> None:
         assert ticket_hash("MT-7", "ready", "") != ticket_hash("MT-7", "done", "")
 
     def test_changes_on_assignee(self) -> None:
-        assert ticket_hash("MT-7", "ready", "seat-a") != ticket_hash("MT-7", "ready", "seat-b")
+        assert ticket_hash("MT-7", "ready", "seat-a") != ticket_hash(
+            "MT-7", "ready", "seat-b"
+        )
 
     def test_none_assignee_is_empty_string(self) -> None:
         assert ticket_hash("MT-7", "ready", None) == ticket_hash("MT-7", "ready", "")
@@ -86,29 +104,48 @@ class TestTicketHash:
 
 async def _story(agent, human):
     """Drive two tickets through real ops; return events plus the keys, seat, and mapping."""
-    key1 = (await human.op("ticket_create", {"title": "Bridge one", "status": "ready",
-                                             "acceptance_criteria": ["x"]}))["data"]["ticket"]["key"]
-    key2 = (await human.op("ticket_create", {"title": "Bridge two", "status": "ready",
-                                             "acceptance_criteria": ["x"]}))["data"]["ticket"]["key"]
+    key1 = (
+        await human.op(
+            "ticket_create",
+            {"title": "Bridge one", "status": "ready", "acceptance_criteria": ["x"]},
+        )
+    )["data"]["ticket"]["key"]
+    key2 = (
+        await human.op(
+            "ticket_create",
+            {"title": "Bridge two", "status": "ready", "acceptance_criteria": ["x"]},
+        )
+    )["data"]["ticket"]["key"]
     seat = (await human.op("board"))["data"]["agents"][0]["id"]
     await human.op("ticket_assign", {"key": key1, "agent_id": seat})
-    epoch = (await agent.op("ticket_claim", {"key": key1}))["data"]["ticket"]["claim_epoch"]
-    await agent.op("ticket_update", {"key": key1, "action": "review", "epoch": epoch, "summary": "done"})
+    epoch = (await agent.op("ticket_claim", {"key": key1}))["data"]["ticket"][
+        "claim_epoch"
+    ]
+    await agent.op(
+        "ticket_update",
+        {"key": key1, "action": "review", "epoch": epoch, "summary": "done"},
+    )
     await human.op("ticket_transition", {"key": key1, "action": "done"})
     await human.op("ticket_assign", {"key": key2, "agent_id": seat})
     await agent.op("ticket_claim", {"key": key2})
     await human.op("ticket_transition", {"key": key2, "action": "pause"})
-    events = (await agent.op("events_since", {"after": 0, "limit": 200}))["data"]["events"]
+    events = (await agent.op("events_since", {"after": 0, "limit": 200}))["data"][
+        "events"
+    ]
     assert any(e["type"] == "ticket.assigned" for e in events), events
     return {"events": events, "mapping": {key1: "task-1", key2: "task-2"}, "seat": seat}
 
 
 async def test_story_maps_to_expected_actions(agent, human):
     story = await _story(agent, human)
-    actions = myteam_events_to_hermes_actions(story["events"], story["mapping"], story["seat"])
+    actions = myteam_events_to_hermes_actions(
+        story["events"], story["mapping"], story["seat"]
+    )
     assert [(a["action"], a["task_id"]) for a in actions] == [
-        ("create_task", "task-1"), ("complete_task", "task-1"),
-        ("create_task", "task-2"), ("block_task", "task-2"),
+        ("create_task", "task-1"),
+        ("complete_task", "task-1"),
+        ("create_task", "task-2"),
+        ("block_task", "task-2"),
     ]
 
 
@@ -121,7 +158,10 @@ async def test_unmapped_types_yield_no_actions(agent, human):
     story = await _story(agent, human)
     for event in story["events"]:
         if event["type"] in ("ticket.created", "ticket.claimed", "ticket.note"):
-            assert myteam_event_to_hermes_action(event, story["mapping"], story["seat"]) is None
+            assert (
+                myteam_event_to_hermes_action(event, story["mapping"], story["seat"])
+                is None
+            )
 
 
 async def test_revoked_blocks_without_a_seat(agent, human):
@@ -129,3 +169,72 @@ async def test_revoked_blocks_without_a_seat(agent, human):
     revoked = next(e for e in story["events"] if e["type"] == "ticket.revoked")
     action = myteam_event_to_hermes_action(revoked, story["mapping"], None)
     assert action is not None and action["action"] == "block_task"
+
+
+class TestClaimEchoAndConflict:
+    def test_echo_skips_reclaim_by_same_session(self, monkeypatch) -> None:
+        plugin = _load_plugin()
+        calls: list[str] = []
+        ticket = {
+            "holder": {"session_id": "sess-1"},
+            "active_session_id": "sess-1",
+            "status": "in_progress",
+            "claim_epoch": 3,
+        }
+
+        def fake_call(op, payload, project, session):
+            calls.append(op)
+            if op == "ticket_find":
+                return {"tickets": [ticket]}
+            raise AssertionError(f"unexpected {op}")
+
+        monkeypatch.setattr(plugin, "call_myteam", fake_call)
+        state: dict = {"project": "p", "session": "sess-1", "mapping": {"MT-1": "t-1"}}
+        plugin._handle_claimed("p", "sess-1", state, "MT-1", "t-1", {})
+        assert calls == ["ticket_find"]
+        assert state.get("pending_blocks") is None
+
+    def test_conflict_records_block(self, monkeypatch) -> None:
+        plugin = _load_plugin()
+
+        def fake_call(op, payload, project, session):
+            if op == "ticket_find":
+                return {
+                    "tickets": [{"holder": None, "status": "ready", "claim_epoch": 0}]
+                }
+            raise RuntimeError(
+                'my-team call \'ticket_claim\' failed: {"error": {"code": "already_claimed_by"}}'
+            )
+
+        monkeypatch.setattr(plugin, "call_myteam", fake_call)
+        state: dict = {"project": "p", "session": "sess-1", "mapping": {"MT-1": "t-1"}}
+        plugin._handle_claimed("p", "sess-1", state, "MT-1", "t-1", {})
+        assert state["pending_blocks"] == [
+            {"task_id": "t-1", "reason": "claimed elsewhere in my-team"}
+        ]
+
+    def test_is_conflict_covers_codes(self) -> None:
+        plugin = _load_plugin()
+        for code in (
+            "already_claimed_by",
+            "assigned_elsewhere",
+            "session_has_active_ticket",
+        ):
+            assert plugin._is_conflict(RuntimeError(code))
+        assert not plugin._is_conflict(RuntimeError("boom"))
+
+
+class TestCompletionNeverDone:
+    def test_completed_uses_review(self, monkeypatch) -> None:
+        plugin = _load_plugin()
+        seen: dict = {}
+
+        def fake_call(op, payload, project, session):
+            seen.update({"op": op, **payload})
+            return {"tickets": [{"claim_epoch": 2}]} if op == "ticket_find" else {}
+
+        monkeypatch.setattr(plugin, "call_myteam", fake_call)
+        state: dict = {"project": "p", "session": "s", "mapping": {"MT-1": "t-1"}}
+        plugin._handle_completed("p", "s", state, "MT-1", "t-1", {"summary": "did"})
+        assert seen["op"] == "ticket_update"
+        assert seen["action"] == "review"
