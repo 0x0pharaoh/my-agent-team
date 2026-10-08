@@ -1,4 +1,5 @@
 """my-team install for Hermes — idempotent installation into a Hermes profile."""
+
 from __future__ import annotations
 
 import itertools
@@ -11,11 +12,13 @@ from pathlib import Path
 
 from my_team.config import load as config_load
 from my_team.config import save as config_save
+from my_team.installers import adapter, confirm, copy_skill
 from my_team.installers import cli_path as my_team_cli_path
-from my_team.installers import confirm, copy_skill
 
 HERMES_MCP_SERVER = "my-team"
 HERMES_HOOKS_AGENT = "hermes"
+PLUGIN_DIR_NAME = "my-team-kanban"
+PLUGIN_SRC = adapter("hermes", "plugin")
 
 
 def hermes_home() -> Path:
@@ -36,6 +39,10 @@ def config_path(home: Path) -> Path:
     return home / "config.yaml"
 
 
+def _plugin_dest(home: Path) -> Path:
+    return home / "plugins" / PLUGIN_DIR_NAME
+
+
 def _hermes_exe() -> str | None:
     """Standard Hermes exe path. No sys.argv[0] fallback (that resolves to my-team itself)."""
     localappdata = os.environ.get("LOCALAPPDATA")
@@ -50,9 +57,7 @@ def _hermes_cli() -> str:
     for cand in (shutil.which("hermes"), _hermes_exe()):
         if cand:
             return cand
-    raise FileNotFoundError(
-        "hermes CLI not found. Install Hermes or set HERMES_HOME."
-    )
+    raise FileNotFoundError("hermes CLI not found. Install Hermes or set HERMES_HOME.")
 
 
 def _install_skill(home: Path) -> None:
@@ -63,11 +68,95 @@ def _install_skill(home: Path) -> None:
         print(f"skill already installed: {dst}")
 
 
+def _install_plugin(home: Path, myteam_cli: str) -> None:
+    dst = _plugin_dest(home)
+    if dst.is_dir() and (dst / "__init__.py").is_file():
+        print(f"plugin already installed: {dst}")
+    else:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if dst.exists():
+            shutil.rmtree(dst)
+        shutil.copytree(PLUGIN_SRC, dst, ignore=shutil.ignore_patterns("__pycache__"))
+        init_py = dst / "__init__.py"
+        content = init_py.read_text(encoding="utf-8")
+        old = 'return os.environ.get("HERMES_MY_TEAM_CLI") or shutil.which("my-team") or "my-team"'
+        new = f'return os.environ.get("HERMES_MY_TEAM_CLI") or {json.dumps(myteam_cli)}'
+        init_py.write_text(content.replace(old, new), encoding="utf-8")
+        print(f"installed plugin: {dst}")
+    _ensure_plugins_enabled(home)
+
+
+def _plugins_enabled(text: str) -> bool:
+    if "plugins:" not in text or "enabled:" not in text:
+        return False
+    return bool(re.search(r"(?m)^\s*-\s*my-team-kanban\s*$", text))
+
+
+def _ensure_plugins_enabled(home: Path) -> None:
+    cfg_path = config_path(home)
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    text = cfg_path.read_text(encoding="utf-8") if cfg_path.exists() else ""
+    if _plugins_enabled(text):
+        print("bridge plugin already enabled via plugins.enabled")
+        return
+    if not text.strip():
+        cfg_path.write_text(
+            "plugins:\n  enabled:\n    - my-team-kanban\n", encoding="utf-8"
+        )
+    elif re.search(r"(?m)^plugins\s*:", text) is None:
+        with open(cfg_path, "a", encoding="utf-8") as f:
+            f.write("\nplugins:\n  enabled:\n    - my-team-kanban\n")
+    else:
+        lines = text.splitlines(keepends=True)
+        out: list[str] = []
+        in_plugins = False
+        plugins_indent = 0
+        enabled_done = False
+        for i, line in enumerate(lines):
+            stripped = line.lstrip()
+            indent = len(line) - len(stripped)
+            if re.match(r"plugins\s*:", stripped):
+                in_plugins = True
+                plugins_indent = indent
+                out.append(line)
+                continue
+            if (
+                in_plugins
+                and re.match(r"enabled\s*:", stripped)
+                and indent > plugins_indent
+            ):
+                out.append(line)
+                if not any(
+                    re.match(r"\s*-\s*my-team-kanban\s*$", l)
+                    for l in lines[i + 1 : i + 20]
+                ):
+                    out.append(" " * (indent + 2) + "- my-team-kanban\n")
+                enabled_done = True
+                in_plugins = False
+                continue
+            if in_plugins and stripped and indent <= plugins_indent:
+                if not enabled_done:
+                    out.append(" " * (plugins_indent + 2) + "enabled:\n")
+                    out.append(" " * (plugins_indent + 4) + "- my-team-kanban\n")
+                    enabled_done = True
+                in_plugins = False
+            out.append(line)
+        if in_plugins and not enabled_done:
+            out.append(" " * (plugins_indent + 2) + "enabled:\n")
+            out.append(" " * (plugins_indent + 4) + "- my-team-kanban\n")
+        backup = str(cfg_path) + ".my-team.bak"
+        shutil.copy2(cfg_path, backup)
+        cfg_path.write_text("".join(out), encoding="utf-8")
+    print("bridge plugin enabled via plugins.enabled")
+
+
 def _hook_entries(myteam_cli: str) -> list[tuple[str, str | None, str]]:
     base = f'"{myteam_cli}"'
-    return [("pre_llm_call", None, f"{base} hook prompt --agent hermes"),
-            ("pre_tool_call", "mcp__my_team__.*", f"{base} hook tool --agent hermes"),
-            ("pre_tool_call", "write_file|patch", f"{base} hook pre-edit --agent hermes")]
+    return [
+        ("pre_llm_call", None, f"{base} hook prompt --agent hermes"),
+        ("pre_tool_call", "mcp__my_team__.*", f"{base} hook tool --agent hermes"),
+        ("pre_tool_call", "write_file|patch", f"{base} hook pre-edit --agent hermes"),
+    ]
 
 
 def _hooks_registered(text: str, myteam_cli: str) -> bool:
@@ -77,7 +166,9 @@ def _hooks_registered(text: str, myteam_cli: str) -> bool:
 def _hooks_text_block(myteam_cli: str) -> str:
     """Hook commands as JSON strings: Hermes splits with shlex posix=False, so one quote layer survives."""
     lines = ["hooks:"]
-    for event, group in itertools.groupby(_hook_entries(myteam_cli), key=lambda entry: entry[0]):
+    for event, group in itertools.groupby(
+        _hook_entries(myteam_cli), key=lambda entry: entry[0]
+    ):
         lines.append(f"  {event}:")
         for _, matcher, cmd in group:
             if matcher is None:
@@ -97,9 +188,13 @@ def mcp_registered(home: Path) -> bool:
     section = re.search(r"(?m)^mcp_servers\s*:", text)
     if not section:
         return False
-    rest = text[section.end():]
+    rest = text[section.end() :]
     dedented = re.search(r"(?m)^\S", rest)
-    return bool(re.search(r"(?m)^\s+my-team\s*:", rest[:dedented.start()] if dedented else rest))
+    return bool(
+        re.search(
+            r"(?m)^\s+my-team\s*:", rest[: dedented.start()] if dedented else rest
+        )
+    )
 
 
 def _ensure_mcp(home: Path, hermes_cli: str, myteam_cli: str) -> None:
@@ -107,8 +202,18 @@ def _ensure_mcp(home: Path, hermes_cli: str, myteam_cli: str) -> None:
     if mcp_registered(home):
         print("MCP server my-team already registered")
         return
-    cmd = [hermes_cli, "mcp", "add", HERMES_MCP_SERVER, "--command", myteam_cli,
-           "--env", "MY_TEAM_AGENT_TYPE=hermes", "--args", "mcp"]
+    cmd = [
+        hermes_cli,
+        "mcp",
+        "add",
+        HERMES_MCP_SERVER,
+        "--command",
+        myteam_cli,
+        "--env",
+        "MY_TEAM_AGENT_TYPE=hermes",
+        "--args",
+        "mcp",
+    ]
     print(f"running: {' '.join(cmd)}")
     try:
         proc = subprocess.run(cmd, check=False)
@@ -118,7 +223,9 @@ def _ensure_mcp(home: Path, hermes_cli: str, myteam_cli: str) -> None:
     if mcp_registered(home):
         print("MCP server my-team registered via hermes CLI")
     else:
-        print(f"hermes mcp add did not register my-team (rc={proc.returncode}); add it manually")
+        print(
+            f"hermes mcp add did not register my-team (rc={proc.returncode}); add it manually"
+        )
 
 
 def _ensure_hooks(home: Path, hermes_cli: str, myteam_cli: str) -> None:
@@ -158,8 +265,10 @@ def _ensure_autostart() -> None:
 def _build_plan(home: Path, hermes_cli: str, myteam_cli: str) -> list[str]:
     return [
         f"install skill to {_skill_dest(home)}",
+        f"install kanban bridge plugin to {_plugin_dest(home)}",
         f"register MCP server ({hermes_cli} mcp add {HERMES_MCP_SERVER} ...)",
         "append pre_llm_call + pre_tool_call hooks to config.yaml",
+        "enable bridge plugin via plugins.enabled",
         "enable autostart in my-team config",
     ]
 
@@ -171,9 +280,12 @@ def install(yes: bool) -> int:
     if not confirm(_build_plan(home, hermes_cli, myteam_cli), yes):
         return 1
     _install_skill(home)
+    _install_plugin(home, myteam_cli)
     _ensure_mcp(home, hermes_cli, myteam_cli)
     _ensure_hooks(home, hermes_cli, myteam_cli)
     _ensure_autostart()
-    print("\nNext steps: approve the hooks on the first terminal `hermes` run (or set hooks_auto_accept), "
-          "check `hermes hooks list`, then restart Hermes.")
+    print(
+        "\nNext steps: approve the hooks on the first terminal `hermes` run (or set hooks_auto_accept), "
+        "check `hermes hooks list`, then restart Hermes."
+    )
     return 0
